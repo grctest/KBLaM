@@ -23,7 +23,7 @@ from typing import Optional, Tuple
 from transformers.models.bitnet import configuration_bitnet, modeling_bitnet
 from transformers.utils import logging
 
-from ...kblam_config import KBLaMConfig
+from ..kblam_config import KBLaMConfig
 
 logger = logging.get_logger(__name__)
 

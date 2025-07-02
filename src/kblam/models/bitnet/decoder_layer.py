@@ -23,7 +23,7 @@ from transformers.utils import logging
 
 from .attention import KBLaMBitNetAttention
 from .mlp import KBLaMBitNetMLP
-from ...kblam_config import KBLaMConfig
+from ..kblam_config import KBLaMConfig
 
 logger = logging.get_logger(__name__)
 

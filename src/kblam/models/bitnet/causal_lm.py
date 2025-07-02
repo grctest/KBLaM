@@ -25,7 +25,7 @@ from transformers.models.bitnet import modeling_bitnet
 from transformers.generation.utils import GenerationMixin
 
 from .modeling import KBLaMBitNetModel
-from ...kblam_config import KBLaMConfig
+from ..kblam_config import KBLaMConfig
 
 logger = logging.get_logger(__name__)
 

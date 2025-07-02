@@ -24,7 +24,7 @@ from transformers.models.bitnet import configuration_bitnet, modeling_bitnet
 
 from .decoder_layer import KBLaMBitNetDecoderLayer
 from .utils import _make_causal_mask, _expand_mask
-from ...kblam_config import KBLaMConfig
+from ..kblam_config import KBLaMConfig
 
 logger = logging.get_logger(__name__)
 
