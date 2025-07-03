@@ -32,11 +32,14 @@ class LayerScale(nn.Module):
     def __init__(self, dim, init_values=1e-5):
         super().__init__()
         self.gamma = nn.Parameter(init_values * torch.ones(dim))
+        # Only log initialization, not every forward
         print(f"[LayerScale] Initialized gamma with value: {init_values}")
 
     def forward(self, x):
-        print(f"[LayerScale] gamma (mean): {self.gamma.data.mean().item():.6g}")
         return x * self.gamma
+
+    def get_gamma_mean(self):
+        return self.gamma.data.mean().item()
 
 
 class KBLaMBitNetDecoderLayer(nn.Module):

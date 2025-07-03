@@ -811,6 +811,17 @@ class Trainer:
                         self.logger.debug(f"Param device: {param.device}, dtype: {param.dtype}")
                         break
                 self.optim.step()
+                # Log LayerScale gamma means once per step (main process only)
+                if self.accelerator.is_main_process and hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
+                    attn_gammas = []
+                    mlp_gammas = []
+                    for layer in self.model.model.layers:
+                        if hasattr(layer, "attn_layerscale"):
+                            attn_gammas.append(layer.attn_layerscale.get_gamma_mean())
+                        if hasattr(layer, "mlp_layerscale"):
+                            mlp_gammas.append(layer.mlp_layerscale.get_gamma_mean())
+                    self.logger.info(f"[LayerScale] attn gamma means: {attn_gammas}")
+                    self.logger.info(f"[LayerScale] mlp gamma means: {mlp_gammas}")
                 if self.use_lr_decay and self.scheduler is not None:
                     self.scheduler.step()
                 if losses:
