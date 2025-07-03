@@ -787,6 +787,12 @@ class Trainer:
                     weighted_loss = raw_loss * weights.max() / weights
                     loss = weighted_loss.mean()
                     self.accelerator.backward(loss)
+
+                    if self.max_grad_norm is not None:
+                        self.accelerator.clip_grad_norm_(
+                            self.model.parameters(), self.max_grad_norm
+                        )
+
                     # Log gradient norm for key param
                     if a_step == 0:
                         for name, param in self.model.named_parameters():
@@ -811,15 +817,6 @@ class Trainer:
                         self.logger.debug(f"Param post-step {name}: first5={vals}")
                         self.logger.debug(f"Param device: {param.device}, dtype: {param.dtype}")
                         break
-
-                if self.max_grad_norm is not None:
-                    self.logger.info(f"[GRAD CLIP] About to clip gradients with max_grad_norm={self.max_grad_norm}")
-                    try:
-                        self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                    except Exception as e:
-                        self.logger.error(f"[GRAD CLIP] Exception during gradient clipping: {e}")
-                        raise
-                    self.logger.info("[GRAD CLIP] Gradient clipping completed.")
 
                 self.optim.step()
                 if self.use_lr_decay and self.scheduler is not None:
