@@ -27,17 +27,28 @@ from ..kblam_config import KBLaMConfig
 
 logger = logging.get_logger(__name__)
 
+
+class LayerScale(nn.Module):
+    def __init__(self, dim, init_values=1e-5):
+        super().__init__()
+        self.gamma = nn.Parameter(init_values * torch.ones(dim))
+
+    def forward(self, x):
+        return x * self.gamma
+
+
 class KBLaMBitNetDecoderLayer(nn.Module):
     """
     Single decoder layer for BitNet, with self-attention and MLP blocks.
     Integrates KBLaM attention for knowledge base retrieval if configured.
     """
-    def __init__(self, config: configuration_bitnet.BitNetConfig, layer_idx: int):
+    def __init__(self, config: configuration_bitnet.BitNetConfig, layer_idx: int, use_layerscale: bool = False):
         """
         Initialize the decoder layer.
         Args:
             config: BitNetConfig with layer parameters.
             layer_idx: Index of this decoder layer.
+            use_layerscale: Whether to use LayerScale.
         """
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -45,6 +56,11 @@ class KBLaMBitNetDecoderLayer(nn.Module):
         self.mlp = KBLaMBitNetMLP(config)
         self.input_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+        self.use_layerscale = use_layerscale
+        if self.use_layerscale:
+            self.attn_layerscale = LayerScale(config.hidden_size)
+            self.mlp_layerscale = LayerScale(config.hidden_size)
 
     def forward(
         self,
@@ -87,12 +103,16 @@ class KBLaMBitNetDecoderLayer(nn.Module):
             attention_save_loc=attention_save_loc,
             attention_file_base_name=attention_file_base_name,
         )
+        if self.use_layerscale:
+            hidden_states = self.attn_layerscale(hidden_states)
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
+        if self.use_layerscale:
+            hidden_states = self.mlp_layerscale(hidden_states)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)

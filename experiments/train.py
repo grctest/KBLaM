@@ -97,6 +97,7 @@ parser.add_argument("--log_to_file", action="store_true", help="Log to file as w
 parser.add_argument("--llm_type",type=str,default="llama3",choices=["llama3", "phi3", "bitnet"])
 parser.add_argument("--max_seq_len", type=int, default=None, help="Maximum sequence length")
 parser.add_argument("--save_period", type=int, default=100, help="Steps between checkpoints")
+parser.add_argument("--use_layerscale", action="store_true", help="Enable LayerScale in BitNet model")
 
 def create_custom_progress_bar(
     console: Console = None,  # type: ignore
@@ -1184,6 +1185,8 @@ def main():
             torch_dtype=torch.bfloat16, # BitNet uses bfloat16
             trust_remote_code=True,
         )
+        # Set use_layerscale on config for downstream use
+        model.config.use_layerscale = args.use_layerscale
     else:
         ValueError(f"LLM type {args.llm_type} not recognised")
 

@@ -37,14 +37,17 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
     including text generation, continuation, and knowledge-augmented generation. It supports
     HuggingFace's generation utilities and integrates with KBLaM's knowledge base features.
     """
-    def __init__(self, config):
+    def __init__(self, config, use_layerscale: bool = None):
         """
         Initialize the CausalLM head.
         Args:
             config: Model configuration with vocab size and hidden size.
+            use_layerscale: Whether to use LayerScale.
         """
+        if use_layerscale is None:
+            use_layerscale = getattr(config, "use_layerscale", False)
         super().__init__(config)
-        self.model = KBLaMBitNetModel(config)
+        self.model = KBLaMBitNetModel(config, use_layerscale=use_layerscale)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.post_init()

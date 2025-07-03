@@ -36,19 +36,24 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
     a stack of decoder layers, and rotary position embeddings. It supports both standard
     language modeling and knowledge base-augmented tasks.
     """
-    def __init__(self, config: configuration_bitnet.BitNetConfig):
+    def __init__(self, config: configuration_bitnet.BitNetConfig, use_layerscale: bool = None):
         """
         Initialize the BitNet model body.
         Args:
             config: BitNetConfig with model hyperparameters.
+            use_layerscale: Whether to use LayerScale.
         """
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
+        # Use config.use_layerscale if not explicitly passed
+        if use_layerscale is None:
+            use_layerscale = getattr(config, "use_layerscale", False)
+
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [KBLaMBitNetDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [KBLaMBitNetDecoderLayer(config, layer_idx, use_layerscale=use_layerscale) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = modeling_bitnet.BitNetRotaryEmbedding(config=config)

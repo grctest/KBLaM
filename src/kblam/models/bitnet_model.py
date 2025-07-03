@@ -16,7 +16,6 @@
 
 from .bitnet.attention import *
 from .bitnet.causal_lm import *
-from .bitnet.classification import *
 from .bitnet.decoder_layer import *
 from .bitnet.mlp import *
 from .bitnet.modeling import *
