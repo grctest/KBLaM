@@ -32,8 +32,10 @@ class LayerScale(nn.Module):
     def __init__(self, dim, init_values=1e-5):
         super().__init__()
         self.gamma = nn.Parameter(init_values * torch.ones(dim))
+        print(f"[LayerScale] Initialized gamma with value: {init_values}")
 
     def forward(self, x):
+        print(f"[LayerScale] gamma (mean): {self.gamma.data.mean().item():.6g}")
         return x * self.gamma
 
 
@@ -42,7 +44,7 @@ class KBLaMBitNetDecoderLayer(nn.Module):
     Single decoder layer for BitNet, with self-attention and MLP blocks.
     Integrates KBLaM attention for knowledge base retrieval if configured.
     """
-    def __init__(self, config: configuration_bitnet.BitNetConfig, layer_idx: int, use_layerscale: bool = False):
+    def __init__(self, config: configuration_bitnet.BitNetConfig, layer_idx: int, use_layerscale: bool = False, layerscale_init_value: float = 1e-5):
         """
         Initialize the decoder layer.
         Args:
@@ -59,8 +61,8 @@ class KBLaMBitNetDecoderLayer(nn.Module):
 
         self.use_layerscale = use_layerscale
         if self.use_layerscale:
-            self.attn_layerscale = LayerScale(config.hidden_size)
-            self.mlp_layerscale = LayerScale(config.hidden_size)
+            self.attn_layerscale = LayerScale(config.hidden_size, init_values=layerscale_init_value)
+            self.mlp_layerscale = LayerScale(config.hidden_size, init_values=layerscale_init_value)
 
     def forward(
         self,

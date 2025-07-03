@@ -98,6 +98,7 @@ parser.add_argument("--llm_type",type=str,default="llama3",choices=["llama3", "p
 parser.add_argument("--max_seq_len", type=int, default=None, help="Maximum sequence length")
 parser.add_argument("--save_period", type=int, default=100, help="Steps between checkpoints")
 parser.add_argument("--use_layerscale", action="store_true", help="Enable LayerScale in BitNet model")
+parser.add_argument("--layerscale_init_value", type=float, default=1e-5, help="Initial value for LayerScale gamma parameter")
 
 def create_custom_progress_bar(
     console: Console = None,  # type: ignore
