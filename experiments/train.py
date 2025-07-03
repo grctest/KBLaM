@@ -786,12 +786,21 @@ class Trainer:
                     raw_loss = loss_fct(shift_logits, shift_labels)
                     weighted_loss = raw_loss * weights.max() / weights
                     loss = weighted_loss.mean()
+
+                    # Check for NaN/Inf loss
+                    if not torch.isfinite(loss):
+                        self.logger.error(f"Loss is {loss.item()} at step {step}, accum_step {a_step}. Skipping backward pass.")
+                        # Skip update for this batch
+                        losses.append(loss.item())
+                        continue
+
                     self.accelerator.backward(loss)
 
                     if self.max_grad_norm is not None:
-                        self.accelerator.clip_grad_norm_(
-                            self.model.parameters(), self.max_grad_norm
-                        )
+                        # It's crucial to clip gradients for the same parameters that the optimizer will update.
+                        # We get these directly from the optimizer's param groups.
+                        params_to_clip = chain.from_iterable(g['params'] for g in self.optim.param_groups)
+                        self.accelerator.clip_grad_norm_(params_to_clip, self.max_grad_norm)
 
                     # Log gradient norm for key param
                     if a_step == 0:
@@ -870,171 +879,6 @@ class Trainer:
                         raise e
         if self.accelerator.is_main_process:
             self.logger.info("================= KBLaM Training Complete =================")
-            num_processes = self.accelerator.num_processes
-            accum_steps_per_gpu = max(1, grad_accum_steps // num_processes)
-            effective_batch_size = batch_size * grad_accum_steps
-            if self.accelerator.is_main_process:
-                self.logger.info(f"Training with {num_processes} GPUs")
-                self.logger.info(f"Total accumulation steps: {grad_accum_steps}, Steps per GPU: {accum_steps_per_gpu}")
-                self.logger.info(f"Batch size: {batch_size}")
-                self.logger.info(f"Effective batch size: {effective_batch_size}")
-            with create_custom_progress_bar(console=console, disable=not self.accelerator.is_main_process) as pbar:
-                task = pbar.add_task("Training", total=self.num_steps, loss=100)
-                for step in range(start_step, self.num_steps, 1):
-                    self.optim.zero_grad()
-                    losses = []
-                    process_rank = self.accelerator.process_index
-                    start_accum_step = process_rank * accum_steps_per_gpu
-                    end_accum_step = min(start_accum_step + accum_steps_per_gpu, grad_accum_steps)
-                    for a_step in range(start_accum_step, end_accum_step):
-                        step_config = get_step_config(
-                            a_step,
-                            grad_accum_steps,
-                            use_data_aug,
-                            outlier_num,
-                            multi_entities,
-                            use_extended_qa,
-                        )
-                        input_ids, attention_masks, labels, batch_indices = self._get_batch(
-                            training_set,
-                            self.tokenizer,
-                            self.device,
-                            B=batch_size,
-                            random_sample=True,
-                            **step_config,
-                        )
-                        if a_step == 0 and step % 10 == 0:
-                            self.logger.info(f"INPUT IDs SHAPE: {input_ids.shape}")
-                        if self.max_seq_len is not None:
-                            input_ids = input_ids[:, : self.max_seq_len]
-                            attention_masks = attention_masks[:, : self.max_seq_len]
-                            labels = labels[:, : self.max_seq_len]
-                            if a_step == 0 and step % 10 == 0:
-                                self.logger.info(f"TRUNCATED INPUT IDs SHAPE: {input_ids.shape}")
-                        kb_embedding = self.kbretriever.get_key_embeddings(
-                            batch_indices, len(input_ids), step, self.kb_size
-                        )
-                        out = self.model(
-                            input_ids=input_ids,
-                            attention_mask=attention_masks,
-                            kb_kvs=kb_embedding,
-                            output_attentions=True,
-                            kb_config=kb_config,
-                        )
-                        logits = out["logits"]
-                        if a_step == 0:
-                            if self.accelerator.is_main_process:
-                                with torch.no_grad():
-                                    batch_index = 0
-                                    max_logits = logits.argmax(axis=2)
-                                    decoded_pred = self.tokenizer.decode(max_logits[batch_index, :-1])
-                                    sel_labels = labels[batch_index, :]
-                                    sel_labels_unmasked = sel_labels[sel_labels != -100]
-                                    decoded_gt = self.tokenizer.decode(sel_labels_unmasked)
-                                    self.logger.info(f"KB SHAPE: {kb_embedding[0].shape}")
-                                    self.logger.info(f"GT: {decoded_gt}")
-                                    self.logger.info(f"PRED: {decoded_pred}")
-                                    wandb.log({"kbsize": kb_embedding[0].shape[1]})
-                                if self.logger.isEnabledFor(logging.DEBUG):
-                                    self.logger.debug("vvvvvvvvvvvvvv DEBUG START vvvvvvvvvvvvvv")
-                                    self.logger.debug(f"Current LR: {self.optim.param_groups[0]['lr']:.2e}")
-                                    full_input_decoded = self.tokenizer.decode(input_ids[batch_index])
-                                    self.logger.debug(f"Full Decoded Input:\n{full_input_decoded}")
-                                    self.logger.debug(f"Full Labels Tensor:\n{sel_labels.cpu().numpy().tolist()}")
-                                    self.logger.debug(f"Number of non-masked labels: {len(sel_labels_unmasked)}")
-                                    for name, param in self.model.named_parameters():
-                                        if "layers.0.self_attn.q_proj.weight" in name and param.requires_grad:
-                                            self.logger.debug(f"Param pre-step (L0 q_proj): {param.abs().mean().item():.6f}")
-                                            break
-                                    self.logger.debug("^^^^^^^^^^^^^^ DEBUG END ^^^^^^^^^^^^^^")
-                        shift_logits = logits[..., :-1, :].contiguous()
-                        shift_labels = labels[..., 1:].contiguous()
-                        weights = (shift_labels > 0).sum(-1, keepdim=True).expand(-1, shift_labels.shape[1]).contiguous()
-                        model_config = (
-                            self.model.config
-                            if not isinstance(self.model, DistributedDataParallel)
-                            else self.model.module.config
-                        )
-                        shift_logits = shift_logits.view(-1, model_config.vocab_size)
-                        shift_labels = shift_labels.view(-1)
-                        weights = weights.view(-1)
-                        shift_labels = shift_labels.to(shift_logits.device)
-                        raw_loss = loss_fct(shift_logits, shift_labels)
-                        weighted_loss = raw_loss * weights.max() / weights
-                        loss = weighted_loss.mean()
-                        self.accelerator.backward(loss)
-                        if a_step == 0 and self.logger.isEnabledFor(logging.DEBUG):
-                            self.logger.debug("vvvvvvvvvvvvvv GRADIENT CHECK vvvvvvvvvvvvvv")
-                            self.logger.debug(f"Raw Loss (mean): {raw_loss.mean().item():.4f}, Final Loss: {loss.item():.4f}")
-                            encoder_param = self.kbretriever.encoder.projector_k.weight
-                            if encoder_param.grad is not None:
-                                self.logger.debug(f"KBEncoder grad norm: {torch.linalg.norm(encoder_param.grad).item():.6f}")
-                            else:
-                                self.logger.debug("KBEncoder grad is None")
-                            for name, param in self.model.named_parameters():
-                                if "layers.0.self_attn.q_proj.weight" in name and param.requires_grad:
-                                    if param.grad is not None:
-                                        self.logger.debug(f"Model L0 q_proj grad norm: {torch.linalg.norm(param.grad).item():.6f}")
-                                    else:
-                                        self.logger.debug("Model L0 q_proj grad is None")
-                                    break
-                            self.logger.debug("^^^^^^^^^^^^^^ GRADIENT CHECK END ^^^^^^^^^^^^^^")
-                        losses.append(loss.item())
-                    self.optim.step()
-                    if self.use_lr_decay and self.scheduler is not None:
-                        self.scheduler.step()
-                    if self.accelerator.is_main_process and self.logger.isEnabledFor(logging.DEBUG):
-                        for name, param in self.model.named_parameters():
-                            if "layers.0.self_attn.q_proj.weight" in name and param.requires_grad:
-                                self.logger.debug(f"Param post-step (L0 q_proj): {param.abs().mean().item():.6f}")
-                                break
-                    if losses:
-                        local_loss = torch.tensor(np.mean(losses), device=self.device)
-                    else:
-                        local_loss = torch.tensor(0.0, device=self.device)
-                    all_losses = self.accelerator.gather(local_loss)
-                    valid_losses = all_losses[all_losses > 0]
-                    avg_loss = valid_losses.mean().item() if len(valid_losses) > 0 else 0.0
-                    if self.accelerator.is_main_process:
-                        self.logger.info(f"step: {step}, loss: {avg_loss}")
-                        wandb.log({'train_loss': np.mean(losses)})
-                        train_losses.append(avg_loss)
-                        pbar.update(task, advance=1, loss=avg_loss)
-                    if (step % save_period) == 0 and (step != start_step):
-                        try:
-                            self.logger.info(
-                                f"Is main process: {self.accelerator.is_main_process}, GPU memory before save: {torch.cuda.memory_allocated()/1e9:.2f}GB / {torch.cuda.get_device_properties(0).total_memory/1e9:.2f}GB"
-                            )
-                            torch.cuda.empty_cache()
-                            self.accelerator.wait_for_everyone()
-                            if self.accelerator.is_main_process:
-                                self.logger.info("Saving checkpoint...")
-                                self.logger.info("Making dirs...")
-                                model_ckpt_name = self.output_path / f"{self.llm_savename}_step_{step}"
-                                model_ckpt_name.mkdir(parents=True, exist_ok=True)
-                                encoder_dir = self.output_path / f"{self.llm_savename}_step_{step}_encoder"
-                                encoder_dir.mkdir(parents=True, exist_ok=True)
-                                self.logger.info("Saving model...")
-                                unwrapped_model = self.accelerator.unwrap_model(self.model)
-                                unwrapped_model.save_pretrained(
-                                    model_ckpt_name,
-                                    is_main_process=self.accelerator.is_main_process,
-                                    save_function=self.accelerator.save,
-                                    safe_serialization=False,
-                                )
-                                self.logger.info("Saving tokenizer...")
-                                self.tokenizer.save_pretrained(model_ckpt_name)
-                                self.logger.info("Saving encoder...")
-                                encoder_ckpt_name = encoder_dir / "encoder.pt"
-                                torch.save(self.kbretriever.encoder.state_dict(), encoder_ckpt_name)
-                                self.logger.info("Saving config...")
-                                config_path = model_ckpt_name / "kb_config_explicit.json"
-                                with open(config_path, 'w') as f:
-                                    f.write(kb_config.to_json_string())
-                        except Exception as e:
-                            self.logger.error(f"Error saving checkpoint: {e}")
-                            self.logger.error(f"Error details: {str(e)}")
-                            raise e
 
 
 def main():
@@ -1168,7 +1012,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(
         hf_model_spec,
         trust_remote_code=True,
-        token=hf_token if hf_token is args.llm_type == "llama3" else None,
+        token=hf_token if args.llm_type == "llama3" else None,
     )
     tokenizer.pad_token = tokenizer.eos_token
 
