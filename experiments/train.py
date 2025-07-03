@@ -815,8 +815,7 @@ class Trainer:
                 if self.max_grad_norm is not None:
                     self.logger.info(f"[GRAD CLIP] About to clip gradients with max_grad_norm={self.max_grad_norm}")
                     try:
-                        grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                        self.logger.info(f"[GRAD CLIP] Actual grad norm before clipping: {grad_norm}")
+                        self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
                     except Exception as e:
                         self.logger.error(f"[GRAD CLIP] Exception during gradient clipping: {e}")
                         raise
