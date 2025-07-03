@@ -595,6 +595,7 @@ class Trainer:
         self.use_lr_decay = use_lr_decay
         self.llm_savename = llm_savename
         self.output_path = pathlib.Path(output_dir)
+        self.llm_q_params = []
 
         if isinstance(llm_model, KBLaMPhi3ForCausalLM):  # Phi3
             self._get_batch = partial(get_batch, _format_QA_phi3, _create_labels_for_phi3)
@@ -619,17 +620,21 @@ class Trainer:
         # 1. Freeze all model params
         for name, param in self.model.named_parameters():
             param.requires_grad = False
-        # 2. Unfreeze only the query head(s) at the correct layer frequency
-        llm_q_params = []
+        # 2. Unfreeze only the query head(s) and LayerScale gammas at the correct layer frequency
+        self.llm_q_params = []
         for name, param in self.model.named_parameters():
             if "q_proj_new.weight" in name:
-                import re
-                m = re.search(r"layers\.(\d+)\.self_attn\.q_proj_new\.weight", name)
+                m = re.search(r"layers\.d+\.self_attn\.q_proj_new\.weight", name)
                 if m:
                     layer_idx = int(m.group(1))
                     if layer_idx % self.kb_token_layer_frequency == 0:
                         param.requires_grad = True
-                        llm_q_params.append(param)
+                        self.llm_q_params.append(param)
+            # Unfreeze LayerScale gamma parameters if LayerScale is enabled
+            if self.use_layerscale and "layerscale.gamma" in name:
+                param.requires_grad = True
+                self.llm_q_params.append(param)
+
         # 3. Always train the encoder
         encoder_params = list(self.kbretriever.encoder.parameters())
         for p in encoder_params:
@@ -639,7 +644,7 @@ class Trainer:
         self.logger.info(f"[BITNET] Trainable parameters: {trainable_names}")
         # 5. Construct optimizer
         from itertools import chain
-        params_to_train = list(chain(encoder_params, llm_q_params))
+        params_to_train = list(chain(encoder_params, self.llm_q_params))
         param_id_map = {id(p): n for n, p in list(self.model.named_parameters()) + list(self.kbretriever.encoder.named_parameters())}
         for p in params_to_train:
             pname = param_id_map.get(id(p), None)
@@ -789,6 +794,13 @@ class Trainer:
                     weighted_loss = raw_loss * weights.max() / weights
                     loss = weighted_loss.mean()
                     self.accelerator.backward(loss)
+
+                    # Add gradient clipping here to prevent exploding gradients
+                    if self.accelerator.sync_gradients:
+                        self.accelerator.clip_grad_norm_(
+                            chain(self.kbretriever.encoder.parameters(), self.llm_q_params), 1.0
+                        )
+
                     # Log gradient norm for key param
                     if a_step == 0:
                         for name, param in self.model.named_parameters():
