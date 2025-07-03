@@ -19,6 +19,26 @@ def _prepare_models(
     kb_layer_frequency,
     kb_scale_factor,
 ):
+    """Prepares and loads the tokenizer, encoder, and language model for evaluation.
+
+    This function initializes the tokenizer, loads the specified language model
+    (Llama3, Phi3, or BitNet), and sets up the knowledge base encoder. It also
+    configures the model for generation and loads pre-trained weights and query heads
+    if provided.
+
+    Args:
+        encoder_spec (str): The specification for the encoder model.
+        encoder_path (str): The path to the pre-trained encoder model.
+        llm_type (str): The type of the language model ('llama3', 'phi3', 'bitnet').
+        llm_base_dir (str): The base directory for the language model.
+        model_path (str): The path to the pre-trained language model.
+        query_head_path (str): The path to the pre-trained query head.
+        kb_layer_frequency (int): The frequency of knowledge base layers.
+        kb_scale_factor (int): The scaling factor for the knowledge base.
+
+    Returns:
+        tuple: A tuple containing the tokenizer, encoder, model, and knowledge base configuration.
+    """
     tokenizer = AutoTokenizer.from_pretrained(
         model_path, trust_remote_code=True, padding_side="left"
     )

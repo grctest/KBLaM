@@ -17,17 +17,22 @@ def create_custom_progress_bar(
     disable=False,
 ) -> Progress:
     """
-    Create a custom progress bar using Rich, optionally including loss reporting.
+    Creates a customizable progress bar using the Rich library.
 
-    :param description: Description of the task
-    :param total: Total number of steps
-    :param console: Rich Console object (if None, a new one will be created)
-    :param color: Color of the progress bar
-    :param show_time: Whether to show the time remaining
-    :param show_spinner: Whether to show a spinner
-    :param spinner_style: Style of the spinner (e.g., "dots", "dots12", "line", "arrow")
-    :param show_loss: Whether to show loss information
-    :return: A Rich Progress object and task ID
+    This function configures and returns a Rich Progress object with various
+    columns for displaying progress, such as a spinner, a description, a bar,
+    task progress percentage, loss value, and remaining time.
+
+    Args:
+        console (Console, optional): A Rich Console object. If None, a new one is created. Defaults to None.
+        color (str, optional): The color of the progress bar and spinner. Defaults to "cyan".
+        show_time (bool, optional): Whether to display the time remaining. Defaults to True.
+        show_spinner (bool, optional): Whether to display a spinner. Defaults to True.
+        spinner_style (str, optional): The style of the spinner. Defaults to "dots".
+        disable (bool, optional): If True, the progress bar will not be displayed. Defaults to False.
+
+    Returns:
+        Progress: A configured Rich Progress object.
     """
     if console is None:
         console = Console()

@@ -5,17 +5,19 @@ from typing import Any
 def write_to_json(
     data: Any, filepath: str, indent: int = 4, encoding: str = "utf-8"
 ) -> bool:
-    """
-    Write a dictionary to a JSON file with error handling and formatting options.
+    """Writes a dictionary to a JSON file with specified formatting.
+
+    This function serializes a Python dictionary to a JSON file with error handling.
+    It allows for custom indentation and encoding.
 
     Args:
-        data: Dictionary to write to JSON file
-        filepath: Path where the JSON file should be saved
-        indent: Number of spaces for indentation (default: 4)
-        encoding: File encoding (default: 'utf-8')
+        data (Any): The dictionary or other serializable object to write to the file.
+        filepath (str): The path to the output JSON file.
+        indent (int, optional): The number of spaces for JSON indentation. Defaults to 4.
+        encoding (str, optional): The file encoding. Defaults to 'utf-8'.
 
-    Raises:
-        TypeError: If data is not a dictionary
+    Returns:
+        bool: True if the file was written successfully, although the function does not explicitly return a value.
     """
 
     try:

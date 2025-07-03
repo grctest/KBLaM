@@ -1,6 +1,15 @@
 import argparse
 
 def parse_args():
+    """Parses command-line arguments for the evaluation script.
+
+    This function sets up and parses command-line arguments for various evaluation
+    modes, including generation, accuracy, refusal, and standard evaluation. It uses
+    subparsers to handle different sets of arguments for each command.
+
+    Returns:
+        argparse.Namespace: An object containing the parsed command-line arguments.
+    """
     parser = argparse.ArgumentParser(description="Evaluation script")
 
     # Add arguments that will be shared across all subcommands

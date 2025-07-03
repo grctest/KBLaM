@@ -1,4 +1,16 @@
 def get_prefix_str(args):
+    """Generates a prefix string for saving model checkpoints based on training arguments.
+
+    This function creates a descriptive string that summarizes the key training
+    hyperparameters and configurations. This string is used to name the saved
+    model checkpoints, making it easy to identify the settings used for a particular run.
+
+    Args:
+        args: An object containing the command-line arguments.
+
+    Returns:
+        str: A prefix string for the model checkpoint name.
+    """
     use_data_aug = args.use_data_aug
     sep_query_head = args.sep_query_head
     kb_size = args.kb_size
@@ -46,13 +58,23 @@ def get_step_config(
     multi_entities: int | None,
     use_extended_qa: bool,
 ):
-    """
-    Our instruction tuning dataset is composed of different types of instructions.
-    Strategies:
-    Outlier QA takes the last `outlier_num` accum steps;
-    Multiple entites QA (if included) takes 1/3 of the rest accum_steps;
-    Extended QA (if included) takes 1/3 of the rest accum_steps;
-    Standard QA takes the rest.
+    """Determines the configuration for the current training step.
+
+    This function defines a strategy for introducing different types of training data
+    at different stages of the training process. It returns a configuration dictionary
+    that specifies whether to use outliers, multi-entity questions, or extended Q&A
+    for the current step.
+
+    Args:
+        current_accum_step (int): The current gradient accumulation step.
+        total_accum_step (int): The total number of gradient accumulation steps.
+        use_data_aug (bool): Whether data augmentation is enabled.
+        outlier_num (int): The number of steps to use outlier questions.
+        multi_entities (int | None): The number of entities for multi-entity questions.
+        use_extended_qa (bool): Whether to use extended Q&A pairs.
+
+    Returns:
+        dict: A dictionary containing the configuration for the current step.
     """
     config = {}
     config["use_data_aug"] = use_data_aug

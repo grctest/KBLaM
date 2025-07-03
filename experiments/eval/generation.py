@@ -39,6 +39,28 @@ def perform_eval(
     multi_entites: int = -1,
     remove_sorry: bool = False,
 ):
+    """Performs evaluation of the model's generation capabilities.
+
+    This function evaluates the model on a generation task using different modes:
+    knowledge base (kb), in-context learning (icl), or zero-shot. It computes
+    ROUGE and BERT scores for the generated outputs and saves the results.
+
+    Args:
+        model (KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM): The language model to evaluate.
+        tokenizer (transformers.PreTrainedTokenizer): The tokenizer for the model.
+        kb_retriever (KBRetriever): The knowledge base retriever.
+        encoder_model_spec (str): The specification of the encoder model.
+        kb_config (KBLaMConfig): The configuration for the knowledge base.
+        eval_mode (str, optional): The evaluation mode ('kb', 'icl', 'zeroshot'). Defaults to "kb".
+        kb_size (int, optional): The size of the knowledge base. Defaults to 250.
+        seed (int, optional): The random seed. Defaults to 1.
+        topk_size (int, optional): The number of top-k entities to retrieve. Defaults to -1.
+        multi_entites (int, optional): The number of entities for multi-entity questions. Defaults to -1.
+        remove_sorry (bool, optional): Whether to remove answers containing "sorry". Defaults to False.
+
+    Returns:
+        tuple: A tuple containing the raw generation results as a string and a dictionary of scores.
+    """
     np.random.seed(seed)
     kb_idx = np.random.randint(0, len(kb_retriever.dataset), kb_size)
     test_kb = [kb_retriever.dataset[idx] for idx in kb_idx]
@@ -162,7 +184,15 @@ def perform_eval(
     return results, results_dict
 
 def eval_generate(args):
-    """Evaluate generation using KB"""
+    """Evaluates the generation capabilities of the model using a knowledge base.
+
+    This function orchestrates the generation evaluation process. It loads the dataset,
+    prepares the models, and then calls `perform_eval` to run the evaluation.
+    The results are saved to files.
+
+    Args:
+        args: Command-line arguments parsed by argparse.
+    """
     dataset_dir = args.dataset_dir
     encoder_model_spec = args.encoder_spec
     encoder_path = args.encoder_dir

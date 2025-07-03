@@ -20,7 +20,16 @@ from .models import _prepare_models
 rouge = evaluate.load("rouge")
 
 def eval_standard(args):
-    """Evaluate the KB model"""
+    """Performs a standard evaluation of the knowledge base model.
+
+    This function runs a comprehensive evaluation, including generation with and
+    without the knowledge base, and analyzes attention weights to calculate
+    accuracy and confidence scores. The results, including ROUGE scores and
+    attention-based metrics, are saved to files.
+
+    Args:
+        args: Command-line arguments parsed by argparse.
+    """
     attn_summary_save_dir = args.attn_summary_save_dir
     dataset_dir = args.dataset_dir
     encoder_model_spec = args.encoder_spec

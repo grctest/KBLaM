@@ -1,6 +1,15 @@
 import argparse
 
 def parse_args():
+    """Parses command-line arguments for the training script.
+
+    This function defines and parses the command-line arguments required for
+    training the model, including dataset specifications, hyperparameters,
+    model configurations, and paths for saving and resuming training.
+
+    Returns:
+        argparse.Namespace: An object containing the parsed command-line arguments.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--train_dataset",type=str,default="synthetic")

@@ -53,6 +53,12 @@ logging.basicConfig(
 
 
 def main():
+    """The main function for training the knowledge base language model.
+
+    This function orchestrates the entire training process. It initializes logging,
+    parses command-line arguments, sets up the dataset, models, and tokenizer,
+    and then starts the training by creating and running a `Trainer` instance.
+    """
     os.environ["NCCL_TIMEOUT"] = "1200000"
     logger = logging.getLogger("training")
 

@@ -25,6 +25,27 @@ def perform_eval_refusal(
     topk_size: int = -1,
     question_size: int = 100,
 ):
+    """Evaluates the model's ability to refuse to answer questions when the answer is not in the KB.
+
+    This function tests the model's refusal capability by providing it with questions,
+    some of which have answers in the knowledge base and some of which do not (outliers).
+    It then checks if the model correctly identifies the outliers and refuses to answer.
+
+    Args:
+        model (KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM): The language model to evaluate.
+        tokenizer (transformers.PreTrainedTokenizer): The tokenizer for the model.
+        kb_retriever (KBRetriever): The knowledge base retriever.
+        kb_config (KBLaMConfig, optional): The configuration for the knowledge base. Defaults to None.
+        eval_mode (str, optional): The evaluation mode ('kb', 'icl', 'zeroshot'). Defaults to "kb".
+        kb_size (int, optional): The size of the knowledge base. Defaults to 250.
+        seed (int, optional): The random seed. Defaults to 1.
+        outlier_ratio (float, optional): The ratio of outlier questions. Defaults to 0.2.
+        topk_size (int, optional): The number of top-k entities to retrieve. Defaults to -1.
+        question_size (int, optional): The total number of questions to ask. Defaults to 100.
+
+    Returns:
+        tuple: A tuple containing the raw generation results as a string and a numpy array with prediction and true labels.
+    """
     instruction_prompts = (
         'Please answer questions based on the given text with format: "The {property} of {name} is {description}",'
         ' if relevant information cannot be found in the text, please respond "I am sorry I cannot find relevant information in the KB".'
@@ -99,7 +120,15 @@ def perform_eval_refusal(
     return results, np.array([prediction, true_label])
 
 def eval_refusal(args):
-    """Evaluate refusal to answer questions for which the answer does not exist in the KB"""
+    """Evaluates the model's refusal capability based on command-line arguments.
+
+    This function orchestrates the refusal evaluation. It parses command-line arguments,
+    prepares the models and data, and then calls `perform_eval_refusal` to run the
+    evaluation. The results are saved to files.
+
+    Args:
+        args: Command-line arguments parsed by argparse.
+    """
     dataset_dir = args.dataset_dir
     encoder_model_spec = args.encoder_spec
     encoder_path = args.encoder_dir

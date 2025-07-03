@@ -30,7 +30,29 @@ def eval_accuracy(
     save_dir,
     attn_save_dir,
 ):
-    """Evaluate accuracy using KB"""
+    """Evaluates the model's accuracy using a knowledge base (KB).
+
+    This function assesses the model's performance by generating answers to questions
+    based on a provided knowledge base. It calculates accuracy and top-5 accuracy based
+    on the attention weights of the model, saving the results and generated outputs.
+
+    Args:
+        tokenizer: The tokenizer for the model.
+        kb_retriever (KBRetriever): The knowledge base retriever.
+        model: The language model to be evaluated.
+        dataset (list): The dataset containing questions and answers.
+        exp_config (str): The experiment configuration name.
+        fancy_question (bool): Whether to use augmented (fancy) questions.
+        kb_config (KBLaMConfig): The configuration for the knowledge base.
+        kb_size (int): The size of the knowledge base to use.
+        llm_type (str): The type of the language model (e.g., 'llama3', 'phi3').
+        test_batch_size (int): The batch size for testing.
+        save_dir (str): The directory to save the evaluation results.
+        attn_save_dir (str): The directory to save attention weights.
+
+    Returns:
+        list: A list of dictionaries containing accuracy and top-5 accuracy for each layer.
+    """
 
     if kb_size == len(dataset):
         dataset_subset_idx = range(len(dataset))
@@ -113,7 +135,14 @@ def eval_accuracy(
     return accs
 
 def eval_accuracy_cli(args):
-    """Evaluate accuracy using KB"""
+    """Command-line interface for evaluating model accuracy.
+
+    Parses command-line arguments, prepares the models and data, and then
+    calls the `eval_accuracy` function to perform the evaluation.
+
+    Args:
+        args: Command-line arguments parsed by argparse.
+    """
     dataset_dir = args.dataset_dir
     encoder_path = args.encoder_dir
     encoder_spec = args.encoder_spec
@@ -166,6 +195,15 @@ def eval_accuracy_cli(args):
     )
 
 def run_accuracy_evalution(args):
+    """Runs the accuracy evaluation across a range of knowledge base sizes.
+
+    This function iterates through a predefined list of knowledge base sizes, running
+    the accuracy evaluation for each size. The results are collected and saved to a
+    JSON file.
+
+    Args:
+        args: Command-line arguments parsed by argparse.
+    """
     dataset_dir = args.dataset_dir
     encoder_path = args.encoder_dir
     encoder_spec = args.encoder_spec

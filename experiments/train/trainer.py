@@ -36,6 +36,32 @@ from .config import get_step_config
 from .ui import create_custom_progress_bar, console
 
 class Trainer:
+    """A class for training the knowledge base language model.
+
+    This class encapsulates the entire training process, including setting up the
+    model, optimizer, and scheduler, running the training loop, and saving checkpoints.
+    It uses Hugging Face's Accelerate for distributed training.
+
+    Attributes:
+        accelerator (Accelerator): The Accelerator object for distributed training.
+        logger (logging.Logger): The logger for training.
+        tokenizer: The tokenizer for the model.
+        sep_query_head (bool): Whether to use a separate query head.
+        kb_token_layer_frequency (int): The frequency of KB token layers.
+        num_steps (int): The total number of training steps.
+        lr (float): The learning rate.
+        max_seq_len (int | None): The maximum sequence length.
+        llm_type (str): The type of the language model.
+        model: The language model.
+        device: The device for training.
+        kbretriever (KBRetriever): The knowledge base retriever.
+        kb_size (int | List[int]): The size of the knowledge base.
+        use_lr_decay (bool): Whether to use learning rate decay.
+        llm_savename (str): The name for saving the language model.
+        output_path (pathlib.Path): The path to the output directory.
+        scheduler: The learning rate scheduler.
+        optim: The optimizer.
+    """
     def __init__(
         self,
         llm_model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM,
@@ -53,6 +79,24 @@ class Trainer:
         sep_query_head: bool = False,
         max_seq_len: int | None = None,
     ):
+        """Initializes the Trainer.
+
+        Args:
+            llm_model (KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM): The language model.
+            kbretriever (KBRetriever): The knowledge base retriever.
+            tokenizer (transformers.PreTrainedTokenizer): The tokenizer.
+            kb_token_layer_frequency (int): The frequency of KB token layers.
+            num_steps (int): The total number of training steps.
+            lr (float): The learning rate.
+            device (torch.device | None): The device for training.
+            use_lr_decay (bool): Whether to use learning rate decay.
+            kb_size (int | List[int]): The size of the knowledge base.
+            llm_savename (str): The name for saving the language model.
+            output_dir (str): The output directory.
+            llm_type (str): The type of the language model.
+            sep_query_head (bool, optional): Whether to use a separate query head. Defaults to False.
+            max_seq_len (int | None, optional): The maximum sequence length. Defaults to None.
+        """
         self.accelerator = Accelerator()
         self.logger = logging.getLogger("training")
         self.tokenizer = tokenizer
@@ -92,6 +136,15 @@ class Trainer:
         )
 
     def setup_scheduler_and_optim(self):
+        """Sets up the optimizer and learning rate scheduler.
+
+        This function configures the optimizer (AdamW) and an optional linear
+        learning rate scheduler with warmup. It freezes the language model's
+        backbone and only sets the query head(s) and the encoder to be trainable.
+
+        Returns:
+            tuple: A tuple containing the scheduler and optimizer.
+        """
         # --- BitNet KBLaM: Freeze all backbone params, unfreeze only query head(s) ---
         # 1. Freeze all model params
         for name, param in self.model.named_parameters():
@@ -151,6 +204,24 @@ class Trainer:
         resumed_step: int = 0,
         kb_config: KBLaMConfig = None,
     ):
+        """Runs the training loop.
+
+        This function executes the main training loop for the specified number of steps.
+        It handles batching, forward and backward passes, optimization, and logging.
+        It also saves model checkpoints periodically.
+
+        Args:
+            training_set (List[Dict]): The training dataset.
+            batch_size (int): The batch size.
+            grad_accum_steps (int): The number of gradient accumulation steps.
+            outlier_num (int): The number of steps to use outlier questions.
+            use_data_aug (bool, optional): Whether to use data augmentation. Defaults to False.
+            multi_entities (bool, optional): Whether to use multi-entity questions. Defaults to False.
+            use_extended_qa (bool, optional): Whether to use extended Q&A pairs. Defaults to False.
+            save_period (int, optional): The period for saving checkpoints. Defaults to 100.
+            resumed_step (int, optional): The step to resume training from. Defaults to 0.
+            kb_config (KBLaMConfig, optional): The configuration for the knowledge base. Defaults to None.
+        """
         train_losses = []
         start_step = resumed_step
         loss_fct = CrossEntropyLoss(reduction="none")

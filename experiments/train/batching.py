@@ -16,13 +16,27 @@ def get_batch(
     multi_entities=None,
     use_extended_qa=False,
 ):
-    """
-    dataset: List of dictionary, denoting the KB, used to extract QA pairs
-    model: The LLM, used to provide the embedding
-    kb_embedding: KB embedding (differentiable)
-    B: Batchsize
-    include_outlier : Create a batch of question without answer in the KB.
-    multi_entities : Create a batch of question that involves more than one entities.
+    """Generates a batch of data for training.
+
+    This function creates a batch of input IDs, attention masks, and labels for
+    training the model. It can handle various data augmentation strategies,
+    including outliers, multi-entity questions, and extended Q&A pairs.
+
+    Args:
+        qa_format_func (Callable[[str, str], str]): A function to format the question and answer into a single string.
+        label_func (Callable[[torch.Tensor, List, Callable, torch.Tensor], torch.Tensor]): A function to create labels for the model.
+        dataset (List[Dict]): The dataset to sample from.
+        tokenizer: The tokenizer for the model.
+        device (torch.device): The device to place the tensors on.
+        B (int, optional): The batch size. Defaults to 20.
+        random_sample (bool, optional): Whether to sample randomly from the dataset. Defaults to True.
+        use_data_aug (bool, optional): Whether to use data augmentation. Defaults to False.
+        include_outlier (bool, optional): Whether to include outlier questions. Defaults to False.
+        multi_entities (int, optional): The number of entities for multi-entity questions. Defaults to None.
+        use_extended_qa (bool, optional): Whether to use extended Q&A pairs. Defaults to False.
+
+    Returns:
+        tuple: A tuple containing input IDs, attention masks, labels, and batch indices.
     """
     labels = []
     if multi_entities is not None:
