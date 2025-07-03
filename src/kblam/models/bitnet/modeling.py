@@ -42,19 +42,20 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
         Args:
             config: BitNetConfig with model hyperparameters.
             use_layerscale: Whether to use LayerScale.
+            layerscale_init_value: Initial value for LayerScale gamma parameter.
         """
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
-
 
         # Use config.use_layerscale if not explicitly passed
         if use_layerscale is None:
             use_layerscale = getattr(config, "use_layerscale", False)
         if layerscale_init_value is None:
             layerscale_init_value = getattr(config, "layerscale_init_value", 1e-5)
+        
         if use_layerscale:
-            print(f"[BitNet] LayerScale enabled (init value: {layerscale_init_value})")
+            logger.info(f"[KBLaMBitNetModel] LayerScale enabled with init value: {layerscale_init_value}")
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(

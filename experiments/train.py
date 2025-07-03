@@ -1185,9 +1185,12 @@ def main():
             device_map=device,
             torch_dtype=torch.bfloat16, # BitNet uses bfloat16
             trust_remote_code=True,
+            use_layerscale=args.use_layerscale,
+            layerscale_init_value=args.layerscale_init_value,
         )
         # Set use_layerscale on config for downstream use
         model.config.use_layerscale = args.use_layerscale
+        model.config.layerscale_init_value = args.layerscale_init_value
     else:
         ValueError(f"LLM type {args.llm_type} not recognised")
 
