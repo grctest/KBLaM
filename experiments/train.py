@@ -769,7 +769,8 @@ class Trainer:
                             self.logger.info(f"KB embedding shape: {kb_embedding[0].shape}")
                             self.logger.info(f"Sample GT: {decoded_gt}")
                             self.logger.info(f"Sample PRED: {decoded_pred}")
-                            wandb.log({"kbsize": kb_embedding[0].shape[1]})
+                            if wandb.run:
+                                wandb.log({"kbsize": kb_embedding[0].shape[1]})
                     shift_logits = logits[..., :-1, :].contiguous()
                     shift_labels = labels[..., 1:].contiguous()
                     weights = (shift_labels > 0).sum(-1, keepdim=True).expand(-1, shift_labels.shape[1]).contiguous()
@@ -812,7 +813,7 @@ class Trainer:
                         break
                 self.optim.step()
                 # Log LayerScale gamma means once per step (main process only)
-                if self.accelerator.is_main_process and hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
+                if self.accelerator.is_main_process and self.model.config.use_layerscale and hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
                     attn_gammas = []
                     mlp_gammas = []
                     for layer in self.model.model.layers:
@@ -824,16 +825,27 @@ class Trainer:
                     self.logger.info(f"[LayerScale] mlp gamma means: {mlp_gammas}")
                 if self.use_lr_decay and self.scheduler is not None:
                     self.scheduler.step()
+                
+                # Correctly gather and average the loss from all processes
                 if losses:
                     local_loss = torch.tensor(np.mean(losses), device=self.device)
+                    gathered_losses = self.accelerator.gather(local_loss.reshape(1))
+                    avg_loss = gathered_losses.mean().item()
                 else:
+                    # If a process had no losses, it will contribute a 0 to the gathered losses
                     local_loss = torch.tensor(0.0, device=self.device)
-                all_losses = self.accelerator.gather(local_loss)
-                valid_losses = all_losses[all_losses > 0]
-                avg_loss = valid_losses.mean().item() if len(valid_losses) > 0 else 0.0
+                    gathered_losses = self.accelerator.gather(local_loss.reshape(1))
+                    # Only average non-zero losses to get the correct step loss
+                    valid_losses = gathered_losses[gathered_losses > 0]
+                    avg_loss = valid_losses.mean().item() if len(valid_losses) > 0 else 0.0
+
                 if self.accelerator.is_main_process:
-                    self.logger.info(f"step: {step}, loss: {avg_loss}")
-                    wandb.log({'train_loss': np.mean(losses)})
+                    log_msg = f"step: {step}, loss: {avg_loss:.4f}"
+                    if self.use_lr_decay and self.scheduler is not None:
+                        log_msg += f", lr: {self.scheduler.get_last_lr()[0]:.2e}"
+                    self.logger.info(log_msg)
+                    if wandb.run:
+                        wandb.log({'train_loss': avg_loss})
                     train_losses.append(avg_loss)
                     pbar.update(task, advance=1, loss=avg_loss)
                 if (step % save_period) == 0 and (step != start_step):
@@ -937,7 +949,8 @@ class Trainer:
                                     self.logger.info(f"KB SHAPE: {kb_embedding[0].shape}")
                                     self.logger.info(f"GT: {decoded_gt}")
                                     self.logger.info(f"PRED: {decoded_pred}")
-                                    wandb.log({"kbsize": kb_embedding[0].shape[1]})
+                                    if wandb.run:
+                                        wandb.log({"kbsize": kb_embedding[0].shape[1]})
                                 if self.logger.isEnabledFor(logging.DEBUG):
                                     self.logger.debug("vvvvvvvvvvvvvv DEBUG START vvvvvvvvvvvvvv")
                                     self.logger.debug(f"Current LR: {self.optim.param_groups[0]['lr']:.2e}")
@@ -1000,7 +1013,7 @@ class Trainer:
                     avg_loss = valid_losses.mean().item() if len(valid_losses) > 0 else 0.0
                     if self.accelerator.is_main_process:
                         self.logger.info(f"step: {step}, loss: {avg_loss}")
-                        wandb.log({'train_loss': np.mean(losses)})
+                        wandb.log({'train_loss': avg_loss})
                         train_losses.append(avg_loss)
                         pbar.update(task, advance=1, loss=avg_loss)
                     if (step % save_period) == 0 and (step != start_step):
@@ -1097,25 +1110,32 @@ def main():
     pathlib.Path(model_save_dir).mkdir(parents=True, exist_ok=True)
 
     if Accelerator().is_main_process:
-        wandb.init(
-            # set the wandb project where this run will be logged
-            project="kb-llm",
-            # track hyperparameters and run metadata
-            config={
-                "learning_rate": args.lr,
-                'sep_query_head': sep_query_head,
-                'kb_size': kb_size,
-                'length_invariance': length_invariance,
-                'dataset': dataset_name,
-                'outlier_num': outlier_num,
-                'multi_entities': multi_entities,
-                'use_extended_qa': use_extended_qa,
-                'kb_token_layer_frequency': kb_token_layer_frequency,
-                'gradient_accm_step': gradient_accm_step,
-                "encoder_spec": encoder_spec,
-                "max_seq_len": max_seq_len,
-            },
-        )
+        try:
+            wandb.init(
+                # set the wandb project where this run will be logged
+                project="kb-llm",
+                # track hyperparameters and run metadata
+                config={
+                    "learning_rate": args.lr,
+                    'sep_query_head': sep_query_head,
+                    'kb_size': kb_size,
+                    'length_invariance': length_invariance,
+                    'dataset': dataset_name,
+                    'outlier_num': outlier_num,
+                    'multi_entities': multi_entities,
+                    'use_extended_qa': use_extended_qa,
+                    'kb_token_layer_frequency': kb_token_layer_frequency,
+                    'gradient_accm_step': gradient_accm_step,
+                    "encoder_spec": encoder_spec,
+                    "max_seq_len": max_seq_len,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Could not initialize wandb: {e}. Disabling wandb.")
+            # Set wandb.run to None to easily check if it's active
+            import wandb
+            wandb.run = None
+
 
     # Try to free up memory
     torch.cuda.empty_cache()
@@ -1194,16 +1214,14 @@ def main():
         model = KBLaMBitNetForCausalLM.from_pretrained(
             llm_model_spec,
             device_map=device,
-            torch_dtype=torch.bfloat16, # BitNet uses bfloat16
+            torch_dtype=torch.bfloat16,
             trust_remote_code=True,
             use_layerscale=args.use_layerscale,
             layerscale_init_value=args.layerscale_init_value,
         )
-        # Set use_layerscale on config for downstream use
-        model.config.use_layerscale = args.use_layerscale
-        model.config.layerscale_init_value = args.layerscale_init_value
     else:
-        ValueError(f"LLM type {args.llm_type} not recognised")
+        raise ValueError(f"Unknown llm_type: {args.llm_type}")
+        
 
     logger.info(model.config)  # type: ignore
 
