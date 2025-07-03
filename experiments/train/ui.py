@@ -7,6 +7,20 @@ from rich.progress import (
     TextColumn,
     TimeRemainingColumn,
 )
+from rich.theme import Theme
+
+# Create a custom theme for Rich
+custom_theme = Theme(
+    {
+        "info": "cyan",
+        "warning": "yellow",
+        "error": "bold red",
+        "critical": "bold white on red",
+    }
+)
+
+# Create a Rich console with the custom theme
+console = Console(theme=custom_theme)
 
 def create_custom_progress_bar(
     console: Console = None,  # type: ignore

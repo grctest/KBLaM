@@ -8,8 +8,7 @@ import wandb
 
 from accelerate import Accelerator
 from rich.logging import RichHandler
-from rich.theme import Theme
-from rich.console import Console
+
 from transformers import AutoTokenizer
 
 from kblam.kb_encoder import KBEncoder
@@ -24,25 +23,13 @@ from train.embeddings import _load_cached_embeddings
 from train.params import _get_parameter_count
 from train.retriever import KBRetriever
 from train.trainer import Trainer
+from train.ui import console
 
 
 LOGFORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOGFORMAT_RICH = "%(message)s"
 
 # setup logging
-# Create a custom theme for Rich
-custom_theme = Theme(
-    {
-        "info": "cyan",
-        "warning": "yellow",
-        "error": "bold red",
-        "critical": "bold white on red",
-    }
-)
-
-# Create a Rich console with the custom theme
-console = Console(theme=custom_theme)
-
 # Configure the root logger to WARNING
 logging.basicConfig(
     level=logging.WARNING,  # Set the root logger to WARNING
