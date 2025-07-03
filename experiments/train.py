@@ -573,6 +573,7 @@ class Trainer:
         llm_type: str,
         sep_query_head: bool = False,
         max_seq_len: int | None = None,
+        use_layerscale: bool = False,
     ):
         self.accelerator = Accelerator()
         self.logger = logging.getLogger("training")
@@ -583,6 +584,7 @@ class Trainer:
         self.lr = lr
         self.max_seq_len = max_seq_len
         self.llm_type = llm_type
+        self.use_layerscale = use_layerscale
 
         self.model = llm_model
         self.model.gradient_checkpointing_enable()
@@ -813,7 +815,7 @@ class Trainer:
                         break
                 self.optim.step()
                 # Log LayerScale gamma means once per step (main process only)
-                if self.accelerator.is_main_process and self.model.config.use_layerscale and hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
+                if self.accelerator.is_main_process and self.use_layerscale and hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
                     attn_gammas = []
                     mlp_gammas = []
                     for layer in self.model.model.layers:
@@ -1286,6 +1288,7 @@ def main():
         llm_type=llm_type,
         sep_query_head=sep_query_head,
         max_seq_len=max_seq_len,
+        use_layerscale=args.use_layerscale,
     )
 
     logger.info(f"Number of trainable parameters: {_get_parameter_count(encoder):,}")
