@@ -97,6 +97,7 @@ parser.add_argument("--log_to_file", action="store_true", help="Log to file as w
 parser.add_argument("--llm_type",type=str,default="llama3",choices=["llama3", "phi3", "bitnet"])
 parser.add_argument("--max_seq_len", type=int, default=None, help="Maximum sequence length")
 parser.add_argument("--save_period", type=int, default=100, help="Steps between checkpoints")
+parser.add_argument("--max_grad_norm", type=float, default=None, help="Maximum gradient norm for clipping. Only used for bitnet.")
 
 def create_custom_progress_bar(
     console: Console = None,  # type: ignore
@@ -571,6 +572,7 @@ class Trainer:
         llm_type: str,
         sep_query_head: bool = False,
         max_seq_len: int | None = None,
+        max_grad_norm: Optional[float] = None,
     ):
         self.accelerator = Accelerator()
         self.logger = logging.getLogger("training")
@@ -581,6 +583,7 @@ class Trainer:
         self.lr = lr
         self.max_seq_len = max_seq_len
         self.llm_type = llm_type
+        self.max_grad_norm = max_grad_norm
 
         self.model = llm_model
         self.model.gradient_checkpointing_enable()
@@ -808,6 +811,10 @@ class Trainer:
                         self.logger.debug(f"Param post-step {name}: first5={vals}")
                         self.logger.debug(f"Param device: {param.device}, dtype: {param.dtype}")
                         break
+
+                if self.max_grad_norm is not None:
+                    self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+
                 self.optim.step()
                 if self.use_lr_decay and self.scheduler is not None:
                     self.scheduler.step()
@@ -1250,6 +1257,7 @@ def main():
         llm_type=llm_type,
         sep_query_head=sep_query_head,
         max_seq_len=max_seq_len,
+        max_grad_norm=args.max_grad_norm if llm_type == "bitnet" else None,
     )
 
     logger.info(f"Number of trainable parameters: {_get_parameter_count(encoder):,}")
@@ -1266,7 +1274,3 @@ def main():
         resumed_step=resumed_step,
         kb_config=kb_config,
     )
-
-
-if __name__ == "__main__":
-    main()
