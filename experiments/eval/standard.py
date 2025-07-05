@@ -6,7 +6,7 @@ import evaluate
 from pathlib import Path
 
 from kblam.kb_encoder import KBEncoder
-from kblam.models.gemma3n_model import Gemma3nForConditionalGeneration
+from kblam.models.gemma3n_model import KblamGemma3nForConditionalGeneration
 from kblam.utils.eval_utils import (
     _format_Q_llama,
     _format_Q_phi3,

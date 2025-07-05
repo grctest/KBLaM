@@ -19,7 +19,7 @@ from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.models.bitnet_model import KBLaMBitNetForCausalLM
-from kblam.models.gemma3n_model import Gemma3nForConditionalGeneration
+from kblam.models.gemma3n_model import KblamGemma3nForConditionalGeneration
 from kblam.models.gemma3n_config import Gemma3nConfig
 
 from .retriever import KBRetriever
@@ -68,7 +68,7 @@ class Trainer:
     """
     def __init__(
         self,
-        llm_model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM | Gemma3nForConditionalGeneration,
+        llm_model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM | KblamGemma3nForConditionalGeneration,
         kbretriever: KBRetriever,
         tokenizer: transformers.PreTrainedTokenizer,
         kb_token_layer_frequency: int,
@@ -86,7 +86,7 @@ class Trainer:
         """Initializes the Trainer.
 
         Args:
-            llm_model (KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM | Gemma3nForConditionalGeneration): The language model.
+            llm_model (KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM | KblamGemma3nForConditionalGeneration): The language model.
             kbretriever (KBRetriever): The knowledge base retriever.
             tokenizer (transformers.PreTrainedTokenizer): The tokenizer.
             kb_token_layer_frequency (int): The frequency of KB token layers.
@@ -130,7 +130,7 @@ class Trainer:
         elif isinstance(llm_model, KBLaMBitNetForCausalLM):
             self._get_batch = partial(get_batch, _format_QA_bitnet, _create_labels_for_bitnet)
             self._get_params = _get_bitnet_query_head_parameters
-        elif isinstance(llm_model, Gemma3nForConditionalGeneration):
+        elif isinstance(llm_model, KblamGemma3nForConditionalGeneration):
             self._get_batch = partial(get_batch, _format_QA_gemma3n, _create_labels_for_gemma3n)
             self._get_params = _get_gemma3n_query_head_parameters
         else:

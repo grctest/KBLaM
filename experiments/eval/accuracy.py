@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from pathlib import Path
 
-from kblam.models.gemma3n_model import Gemma3nForConditionalGeneration
+from kblam.models.gemma3n_model import KblamGemma3nForConditionalGeneration
 from kblam.models.gemma3n_config import Gemma3nConfig
 from kblam.utils.data_utils import augment_row
 from kblam.utils.eval_utils import (
