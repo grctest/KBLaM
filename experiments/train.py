@@ -16,6 +16,9 @@ from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.models.bitnet_model import KBLaMBitNetForCausalLM
+from kblam.models.gemma3n_model import Gemma3nForConditionalGeneration
+from kblam.models.gemma3n_config import Gemma3nConfig
+
 
 from train.args import parse_args
 from train.config import get_prefix_str
@@ -206,6 +209,13 @@ def main():
             torch_dtype=torch.bfloat16, # BitNet uses bfloat16
             trust_remote_code=True,
         )
+    elif args.llm_type == "gemma3n":
+        model = Gemma3nForConditionalGeneration.from_pretrained(
+            llm_model_spec,
+            device_map=device,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+        )
     else:
         raise ValueError(f"LLM type {args.llm_type} not recognised")
 
@@ -232,16 +242,34 @@ def main():
         encoder.load_state_dict(torch.load(os.path.join(encoder_dir, "encoder.pt")))
         if args.llm_type == "bitnet":
             config_path = os.path.join(model_dir_to_resume, "kb_config_explicit.json")
+        elif args.llm_type == "gemma3n":
+            config_path = os.path.join(model_dir_to_resume, "gemma3n_config.json")
         else:
             config_path = os.path.join(model_dir_to_resume, "kb_config.json")
-        kb_config = KBLaMConfig.from_pretrained(config_path)
+
+        if args.llm_type == "gemma3n":
+            kb_config = Gemma3nConfig.from_pretrained(config_path)
+        else:
+            kb_config = KBLaMConfig.from_pretrained(config_path)
     else:
-        kb_config = KBLaMConfig(
-            sep_query_head=sep_query_head,
-            kb_layer_frequency=kb_token_layer_frequency,
-            kb_length_scaling=length_invariance,
-            kb_max_train_triples=N,
-        )
+        if args.llm_type == "gemma3n":
+            # This is a placeholder, the actual config will be loaded from the model
+            kb_config = Gemma3nConfig(
+                text_config={},
+                vision_config={},
+                audio_config={},
+                sep_query_head=sep_query_head,
+                kb_layer_frequency=kb_token_layer_frequency,
+                kb_length_scaling=length_invariance,
+                kb_max_train_triples=N,
+            )
+        else:
+            kb_config = KBLaMConfig(
+                sep_query_head=sep_query_head,
+                kb_layer_frequency=kb_token_layer_frequency,
+                kb_length_scaling=length_invariance,
+                kb_max_train_triples=N,
+            )
 
     encoder.train()
 
