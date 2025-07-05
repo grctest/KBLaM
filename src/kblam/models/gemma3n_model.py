@@ -53,9 +53,10 @@ class KblamGemma3nAttention(Gemma3nTextAttention):
     Extend this class to add KBLaM logic as needed.
     """
     def __init__(self, config, layer_idx: int):
-        super().__init__(config.text_config, layer_idx)
+        text_config = config.text_config if hasattr(config, 'text_config') else config
+        super().__init__(text_config, layer_idx)
         # Project KB embeddings to match attention key/value dimension
-        self.kb_proj = nn.Linear(config.text_config.hidden_size, self.head_dim, bias=False)
+        self.kb_proj = nn.Linear(text_config.hidden_size, self.head_dim, bias=False)
 
     def forward(self, hidden_states, position_embeddings=None, attention_mask=None, past_key_value=None, kb_embeds=None, **kwargs):
         # Standard attention projections
@@ -119,11 +120,12 @@ class KblamGemma3nAttention(Gemma3nTextAttention):
 class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
     """Custom decoder layer for Gemma-3N that uses the KblamGemma3nAttention."""
     def __init__(self, config, layer_idx: int):
-        super().__init__(config.text_config, layer_idx)
+        text_config = config.text_config if hasattr(config, 'text_config') else config
+        super().__init__(text_config, layer_idx)
         self.self_attn = KblamGemma3nAttention(config, layer_idx)
-        self.mlp = Gemma3nTextMLP(config.text_config, layer_idx)
-        self.input_layernorm = Gemma3nRMSNorm(config.text_config.hidden_size, eps=config.text_config.rms_norm_eps)
-        self.post_attention_layernorm = Gemma3nRMSNorm(config.text_config.hidden_size, eps=config.text_config.rms_norm_eps)
+        self.mlp = Gemma3nTextMLP(text_config, layer_idx)
+        self.input_layernorm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
+        self.post_attention_layernorm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
 
     def forward(self, hidden_states, position_embeddings, attention_mask=None, past_key_value=None, kb_embeds=None, **kwargs):
         # Layer norm
