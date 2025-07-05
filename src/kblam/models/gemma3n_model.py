@@ -183,7 +183,7 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
         super().__init__(config)
         self.text_model = KblamGemma3nTextModel(config.text_config)
         self.text_projection = nn.Linear(config.text_config.hidden_size, config.text_config.hidden_size, bias=False)
-        self.lm_head = nn.Linear(config.text_config.hidden_size, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
         self.post_init()
         # Add KBLaM specific attributes to the config if they don't exist.
         if not hasattr(self.config, "kb_layer_frequency"):
@@ -246,7 +246,7 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             loss_fct = CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
             shift_labels = shift_labels.view(-1)
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
