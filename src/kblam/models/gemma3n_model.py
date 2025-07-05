@@ -53,9 +53,9 @@ class KblamGemma3nAttention(Gemma3nTextAttention):
     Extend this class to add KBLaM logic as needed.
     """
     def __init__(self, config, layer_idx: int):
-        super().__init__(config, layer_idx)
+        super().__init__(config.text_config, layer_idx)
         # Project KB embeddings to match attention key/value dimension
-        self.kb_proj = nn.Linear(config.hidden_size, self.head_dim, bias=False)
+        self.kb_proj = nn.Linear(config.text_config.hidden_size, self.head_dim, bias=False)
 
     def forward(self, hidden_states, position_embeddings=None, attention_mask=None, past_key_value=None, kb_embeds=None, **kwargs):
         # Standard attention projections
@@ -119,11 +119,11 @@ class KblamGemma3nAttention(Gemma3nTextAttention):
 class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
     """Custom decoder layer for Gemma-3N that uses the KblamGemma3nAttention."""
     def __init__(self, config, layer_idx: int):
-        super().__init__(config, layer_idx)
+        super().__init__(config.text_config, layer_idx)
         self.self_attn = KblamGemma3nAttention(config, layer_idx)
-        self.mlp = Gemma3nTextMLP(config, layer_idx)
-        self.input_layernorm = Gemma3nRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = Gemma3nRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.mlp = Gemma3nTextMLP(config.text_config, layer_idx)
+        self.input_layernorm = Gemma3nRMSNorm(config.text_config.hidden_size, eps=config.text_config.rms_norm_eps)
+        self.post_attention_layernorm = Gemma3nRMSNorm(config.text_config.hidden_size, eps=config.text_config.rms_norm_eps)
 
     def forward(self, hidden_states, position_embeddings, attention_mask=None, past_key_value=None, kb_embeds=None, **kwargs):
         # Layer norm
@@ -142,10 +142,10 @@ class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
 class KblamGemma3nTextModel(Gemma3nTextModel):
     """The text-processing component of the KBLAM Gemma-3N model."""
     def __init__(self, config):
-        super().__init__(config)
+        super().__init__(config.text_config)
         # Replace layers with KBLaM versions
         self.layers = nn.ModuleList(
-            [KblamGemma3nDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [KblamGemma3nDecoderLayer(config, layer_idx) for layer_idx in range(config.text_config.num_hidden_layers)]
         )
 
     def forward(self, input_ids=None, attention_mask=None, position_ids=None, past_key_values=None, inputs_embeds=None, kb_embeds=None, **kwargs):
