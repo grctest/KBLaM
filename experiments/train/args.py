@@ -40,7 +40,7 @@ def parse_args():
     parser.add_argument("--gradient_accm_step", type=int, default=20, help="Introduce QA with extended open-ended parts")
     parser.add_argument("--verbose", action="store_true", help="Set logging to debug")
     parser.add_argument("--log_to_file", action="store_true", help="Log to file as well as stdout")
-    parser.add_argument("--llm_type",type=str,default="llama3",choices=["llama3", "phi3", "bitnet"])
+    parser.add_argument("--llm_type",type=str,default="llama3",choices=["llama3", "phi3", "bitnet", "gemma3n"])
     parser.add_argument("--max_seq_len", type=int, default=None, help="Maximum sequence length")
     parser.add_argument("--save_period", type=int, default=100, help="Steps between checkpoints")
     return parser.parse_args()
