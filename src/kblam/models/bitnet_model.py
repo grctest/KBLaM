@@ -21,7 +21,3 @@ from .bitnet.decoder_layer import *
 from .bitnet.mlp import *
 from .bitnet.modeling import *
 from .bitnet.utils import *
-from transformers.generation import GenerationMixin
-from transformers.models.bitnet.modeling_bitnet import BitNetPreTrainedModel, BitNetModel
-
-class KBLaMBitNetForCausalLM(BitNetPreTrainedModel, GenerationMixin):
