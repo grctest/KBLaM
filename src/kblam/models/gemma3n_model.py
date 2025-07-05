@@ -26,10 +26,8 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast
 from transformers.models.gemma3n.modeling_gemma3n import (
-    Gemma3nAudioModel,
     Gemma3nConfig,
     Gemma3nPreTrainedModel,
-    Gemma3nVisionModel,
     Gemma3nTextModel,
     Gemma3nTextDecoderLayer,
     Gemma3nTextAttention,
@@ -184,11 +182,7 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
     def __init__(self, config: Gemma3nConfig):
         super().__init__(config)
         self.text_model = KblamGemma3nTextModel(config.text_config)
-        self.vision_model = Gemma3nVisionModel(config.vision_config)
-        self.audio_model = Gemma3nAudioModel(config.audio_config)
         self.text_projection = nn.Linear(config.text_config.hidden_size, config.hidden_size, bias=False)
-        self.vision_projection = nn.Linear(config.vision_config.hidden_size, config.hidden_size, bias=False)
-        self.audio_projection = nn.Linear(config.audio_config.hidden_size, config.hidden_size, bias=False)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.post_init()
         # Add KBLaM specific attributes to the config if they don't exist.
