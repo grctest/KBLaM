@@ -94,10 +94,6 @@ class Gemma3nTextConfig(PretrainedConfig):
 class Gemma3nConfig(PretrainedConfig):
     model_type = "gemma3n"
 
-    @property
-    def hidden_size(self):
-        return self.text_config.hidden_size
-
     def __init__(
         self,
         text_config=None,
@@ -116,6 +112,8 @@ class Gemma3nConfig(PretrainedConfig):
             logger.info("text_config is None. Initializing the Gemma3nTextConfig with default values.")
 
         self.text_config = Gemma3nTextConfig(**text_config)
+        self.hidden_size = self.text_config.hidden_size
+        self.vocab_size = self.text_config.vocab_size
         self.boa_token_id = boa_token_id
         self.boi_token_id = boi_token_id
         self.eoa_token_id = eoa_token_id
