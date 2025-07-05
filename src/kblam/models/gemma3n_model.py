@@ -219,6 +219,11 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
         """
         The forward pass of the model with KBLaM support.
         """
+        if position_ids is None and input_ids is not None:
+            device = input_ids.device
+            seq_length = input_ids.shape[1]
+            position_ids = torch.arange(seq_length, dtype=torch.long, device=device).unsqueeze(0)
+
         output_attentions = output_attentions if output_attentions is not None else self.config.text_config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.text_config.output_hidden_states
