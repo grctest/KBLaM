@@ -181,7 +181,7 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
 
     def __init__(self, config: Gemma3nConfig):
         super().__init__(config)
-        self.text_model = KblamGemma3nTextModel(config.text_config)
+        self.text_model = KblamGemma3nTextModel(config)
         self.text_projection = nn.Linear(config.text_config.hidden_size, config.text_config.hidden_size, bias=False)
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
         self.post_init()
