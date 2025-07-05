@@ -24,6 +24,7 @@ from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss
 from transformers import Gemma3nForConditionalGeneration as HfGemma3nForConditionalGeneration
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers import Gemma3nConfig, Gemma3nTextConfig
+from transformers.generation import GenerationMixin
 
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
@@ -162,11 +163,18 @@ class Gemma3nMLP(nn.Module):
     A standard MLP block for the Gemma-3n model, consisting of a gate-and-up projection
     followed by a down projection.
     """
-    def __init__(self, config: Gemma3nTextConfig):
+    def __init__(self, config: Gemma3nTextConfig, layer_idx: int):
         super().__init__()
         self.config = config
-        self.gate_up_proj = nn.Linear(config.hidden_size, 2 * config.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+        
+        # Handle variable intermediate sizes for MatFormer architectures
+        if isinstance(config.intermediate_size, (list, tuple)):
+            intermediate_size = config.intermediate_size[layer_idx]
+        else:
+            intermediate_size = config.intermediate_size
+
+        self.gate_up_proj = nn.Linear(config.hidden_size, 2 * intermediate_size, bias=False)
+        self.down_proj = nn.Linear(intermediate_size, config.hidden_size, bias=False)
         self.activation_fn = ACT2FN[config.hidden_activation]
 
     def forward(self, hidden_states: torch.FloatTensor) -> torch.FloatTensor:
@@ -412,7 +420,7 @@ class Gemma3nAudioModel(Gemma3nPreTrainedModel):
 
 
 # --- KBLaM-augmented Gemma3nForConditionalGeneration ---
-class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel):
+class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMixin):
     """
     Knowledge Base-augmented Gemma-3n model for conditional generation.
 
@@ -853,7 +861,7 @@ class Gemma3nDecoderLayer(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.self_attn = KblamGemma3nAttention(config=config, layer_idx=layer_idx)
-        self.mlp = Gemma3nMLP(config)
+        self.mlp = Gemma3nMLP(config, layer_idx=layer_idx)
         self.input_layernorm = Gemma3nRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Gemma3nRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
