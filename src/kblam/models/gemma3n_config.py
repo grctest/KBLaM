@@ -1,3 +1,6 @@
+    @property
+    def hidden_size(self):
+        return self.text_config.hidden_size
 # coding=utf-8
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
@@ -92,6 +95,9 @@ class Gemma3nTextConfig(PretrainedConfig):
 
 
 class Gemma3nConfig(PretrainedConfig):
+    @property
+    def hidden_size(self):
+        return self.text_config.hidden_size
     model_type = "gemma3n"
 
     def __init__(
