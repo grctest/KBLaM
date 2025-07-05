@@ -90,100 +90,19 @@ class Gemma3nTextConfig(PretrainedConfig):
         self.vocab_size_per_layer_input = vocab_size_per_layer_input
         super().__init__(**kwargs)
 
-class Gemma3nVisionConfig(PretrainedConfig):
-    def __init__(
-        self,
-        architecture="mobilenetv5_300m_enc",
-        do_pooling=True,
-        hidden_size=2048,
-        initializer_range=0.02,
-        label_names=None,
-        model_type="gemma3n_vision",
-        num_classes=2,
-        rms_norm_eps=1e-06,
-        vocab_offset=262144,
-        vocab_size=128,
-        **kwargs,
-    ):
-        self.architecture = architecture
-        self.do_pooling = do_pooling
-        self.hidden_size = hidden_size
-        self.initializer_range = initializer_range
-        self.label_names = label_names if label_names is not None else ["LABEL_0", "LABEL_1"]
-        self.model_type = model_type
-        self.num_classes = num_classes
-        self.rms_norm_eps = rms_norm_eps
-        self.vocab_offset = vocab_offset
-        self.vocab_size = vocab_size
-        super().__init__(**kwargs)
-
-class Gemma3nAudioConfig(PretrainedConfig):
-    def __init__(
-        self,
-        conf_attention_chunk_size=12,
-        conf_attention_context_left=13,
-        conf_attention_context_right=0,
-        conf_attention_logit_cap=50.0,
-        conf_conv_kernel_size=5,
-        conf_num_attention_heads=8,
-        conf_num_hidden_layers=12,
-        conf_positional_bias_size=256,
-        conf_reduction_factor=4,
-        conf_residual_weight=0.5,
-        gradient_clipping=10000000000.0,
-        hidden_size=1536,
-        input_feat_size=128,
-        model_type="gemma3n_audio",
-        rms_norm_eps=1e-06,
-        sscp_conv_channel_size=None,
-        sscp_conv_eps=0.001,
-        sscp_conv_kernel_size=None,
-        sscp_conv_stride_size=None,
-        vocab_offset=262272,
-        vocab_size=128,
-        **kwargs,
-    ):
-        self.conf_attention_chunk_size = conf_attention_chunk_size
-        self.conf_attention_context_left = conf_attention_context_left
-        self.conf_attention_context_right = conf_attention_context_right
-        self.conf_attention_logit_cap = conf_attention_logit_cap
-        self.conf_conv_kernel_size = conf_conv_kernel_size
-        self.conf_num_attention_heads = conf_num_attention_heads
-        self.conf_num_hidden_layers = conf_num_hidden_layers
-        self.conf_positional_bias_size = conf_positional_bias_size
-        self.conf_reduction_factor = conf_reduction_factor
-        self.conf_residual_weight = conf_residual_weight
-        self.gradient_clipping = gradient_clipping
-        self.hidden_size = hidden_size
-        self.input_feat_size = input_feat_size
-        self.model_type = model_type
-        self.rms_norm_eps = rms_norm_eps
-        self.sscp_conv_channel_size = sscp_conv_channel_size if sscp_conv_channel_size is not None else [128, 32]
-        self.sscp_conv_eps = sscp_conv_eps
-        self.sscp_conv_kernel_size = sscp_conv_kernel_size if sscp_conv_kernel_size is not None else [[3, 3], [3, 3]]
-        self.sscp_conv_stride_size = sscp_conv_stride_size if sscp_conv_stride_size is not None else [[2, 2], [2, 2]]
-        self.vocab_offset = vocab_offset
-        self.vocab_size = vocab_size
-        super().__init__(**kwargs)
 
 class Gemma3nConfig(PretrainedConfig):
     model_type = "gemma3n"
-    is_composition = True
 
     def __init__(
         self,
         text_config=None,
-        vision_config=None,
-        audio_config=None,
-        audio_soft_tokens_per_image=188,
-        audio_token_id=262273,
         boa_token_id=256000,
         boi_token_id=255999,
         eoa_token_id=262272,
         eoi_token_id=262144,
         image_token_id=262145,
         initializer_range=0.02,
-        vision_soft_tokens_per_image=256,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -192,35 +111,10 @@ class Gemma3nConfig(PretrainedConfig):
             text_config = {}
             logger.info("text_config is None. Initializing the Gemma3nTextConfig with default values.")
 
-        if vision_config is None:
-            vision_config = {}
-            logger.info("vision_config is None. Initializing the Gemma3nVisionConfig with default values.")
-        
-        if audio_config is None:
-            audio_config = {}
-            logger.info("audio_config is None. Initializing the Gemma3nAudioConfig with default values.")
-
         self.text_config = Gemma3nTextConfig(**text_config)
-        self.vision_config = Gemma3nVisionConfig(**vision_config)
-        self.audio_config = Gemma3nAudioConfig(**audio_config)
-        
-        self.audio_soft_tokens_per_image = audio_soft_tokens_per_image
-        self.audio_token_id = audio_token_id
         self.boa_token_id = boa_token_id
         self.boi_token_id = boi_token_id
         self.eoa_token_id = eoa_token_id
         self.eoi_token_id = eoi_token_id
         self.image_token_id = image_token_id
         self.initializer_range = initializer_range
-        self.vision_soft_tokens_per_image = vision_soft_tokens_per_image
-
-    @classmethod
-    def from_text_vision_audio_configs(
-        cls, text_config: Gemma3nTextConfig, vision_config: Gemma3nVisionConfig, audio_config: Gemma3nAudioConfig, **kwargs
-    ) -> "Gemma3nConfig":
-        return cls(
-            text_config=text_config.to_dict(),
-            vision_config=vision_config.to_dict(),
-            audio_config=audio_config.to_dict(),
-            **kwargs,
-        )
