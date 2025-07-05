@@ -9,15 +9,14 @@ import wandb
 from accelerate import Accelerator
 from rich.logging import RichHandler
 
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, Gemma3nConfig
 
 from kblam.kb_encoder import KBEncoder
 from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.models.bitnet_model import KBLaMBitNetForCausalLM
-from kblam.models.gemma3n_model import Gemma3nForConditionalGeneration
-from kblam.models.gemma3n_config import Gemma3nConfig
+from kblam.models.gemma3n_model import KblamGemma3nForConditionalGeneration
 
 
 from train.args import parse_args
@@ -210,7 +209,7 @@ def main():
             trust_remote_code=True,
         )
     elif args.llm_type == "gemma3n":
-        model = Gemma3nForConditionalGeneration.from_pretrained(
+        model = KblamGemma3nForConditionalGeneration.from_pretrained(
             llm_model_spec,
             device_map=device,
             torch_dtype=torch.bfloat16,
@@ -243,12 +242,9 @@ def main():
         if args.llm_type == "bitnet":
             config_path = os.path.join(model_dir_to_resume, "kb_config_explicit.json")
         elif args.llm_type == "gemma3n":
-            config_path = os.path.join(model_dir_to_resume, "gemma3n_config.json")
-        else:
-            config_path = os.path.join(model_dir_to_resume, "kb_config.json")
-
-        if args.llm_type == "gemma3n":
-            kb_config = Gemma3nConfig.from_pretrained(config_path)
+            # The KBLaM-specific config is saved alongside the main model config
+            config_path = os.path.join(model_dir_to_resume, "config.json")
+            kb_config = KBLaMConfig.from_pretrained(config_path)
         else:
             kb_config = KBLaMConfig.from_pretrained(config_path)
     else:
