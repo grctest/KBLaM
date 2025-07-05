@@ -16,6 +16,7 @@ The following models from Hugging Face hub are currently supported:
  - [Phi-3-mini-4k-instruct](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct)
  - [microsoft/bitnet-b1.58-2B-4T-bf16](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-bf16)
  - [google/gemma-3n-E2B](https://huggingface.co/google/gemma-3n-E2B)
+ - [google/gemma-3n-E4B](https://huggingface.co/google/gemma-3n-E4B)
 
 To add support for new model types, you will need to update the model processing scripts to incorporate an adapter similar to `llama_model.py` or `gemma3n_model.py` in `src/kblam/models`.
 
