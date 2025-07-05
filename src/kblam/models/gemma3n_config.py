@@ -111,7 +111,13 @@ class Gemma3nConfig(PretrainedConfig):
             text_config = {}
             logger.info("text_config is None. Initializing the Gemma3nTextConfig with default values.")
 
-        self.text_config = Gemma3nTextConfig(**text_config)
+        # If loading from dict, text_config may already be a Gemma3nTextConfig
+        if isinstance(text_config, dict):
+            self.text_config = Gemma3nTextConfig(**text_config)
+        else:
+            self.text_config = text_config
+
+        # Always set these at the top level for compatibility
         self.hidden_size = self.text_config.hidden_size
         self.vocab_size = self.text_config.vocab_size
         self.boa_token_id = boa_token_id
@@ -120,3 +126,10 @@ class Gemma3nConfig(PretrainedConfig):
         self.eoi_token_id = eoi_token_id
         self.image_token_id = image_token_id
         self.initializer_range = initializer_range
+
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        # Keep hidden_size and vocab_size in sync with text_config
+        if name == "text_config" and value is not None:
+            super().__setattr__("hidden_size", value.hidden_size)
+            super().__setattr__("vocab_size", value.vocab_size)
