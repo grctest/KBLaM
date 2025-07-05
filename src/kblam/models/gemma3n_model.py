@@ -182,8 +182,8 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
     def __init__(self, config: Gemma3nConfig):
         super().__init__(config)
         self.text_model = KblamGemma3nTextModel(config.text_config)
-        self.text_projection = nn.Linear(config.text_config.hidden_size, config.hidden_size, bias=False)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.text_projection = nn.Linear(config.text_config.hidden_size, config.text_config.hidden_size, bias=False)
+        self.lm_head = nn.Linear(config.text_config.hidden_size, config.vocab_size, bias=False)
         self.post_init()
         # Add KBLaM specific attributes to the config if they don't exist.
         if not hasattr(self.config, "kb_layer_frequency"):
