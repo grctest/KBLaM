@@ -226,12 +226,19 @@ def main():
         param.requires_grad = False
 
     # Set up the encoder
+    if llm_type == "gemma3n":
+        hidden_size = model.config.text_config.hidden_size
+        num_hidden_layers = model.config.text_config.num_hidden_layers
+    else:
+        hidden_size = model.config.hidden_size
+        num_hidden_layers = model.config.num_hidden_layers
+
     encoder = KBEncoder(
         encoder_name=encoder_spec,
         projector_type="linear",
         endpoint_url="",
-        out_dim=model.config.hidden_size  # type: ignore
-        * (model.config.num_hidden_layers // kb_token_layer_frequency + 1),  # type: ignore
+        out_dim=hidden_size
+        * (num_hidden_layers // kb_token_layer_frequency + 1),  # type: ignore
         frozen_base_model=True,
         device=device,
     )
