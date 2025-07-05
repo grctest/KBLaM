@@ -1,6 +1,3 @@
-    @property
-    def hidden_size(self):
-        return self.text_config.hidden_size
 # coding=utf-8
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
