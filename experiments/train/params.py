@@ -2,7 +2,7 @@ import re
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.models.bitnet_model import KBLaMBitNetForCausalLM
-from kblam.models.gemma3n_model import Gemma3nForConditionalGeneration
+from kblam.models.gemma3n_model import KblamGemma3nForConditionalGeneration
 
 def _get_parameter_count(encoder):
     """Calculates the number of trainable parameters in the encoder.
@@ -146,7 +146,7 @@ def _get_bitnet_query_head_parameters(
 
 
 def _get_gemma3n_query_head_parameters(
-    model: Gemma3nForConditionalGeneration,
+    model: KblamGemma3nForConditionalGeneration,
     sep_query_head: bool,
     kb_token_layer_frequency: int,
 ):
