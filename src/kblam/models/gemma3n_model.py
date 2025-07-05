@@ -36,7 +36,7 @@ from transformers.models.gemma3n.modeling_gemma3n import (
 )
 from transformers.generation.utils import GenerationMixin
 from transformers.utils import logging
-from ..kblam_config import KBLaMConfig
+from kblam.kblam_config import KBLaMConfig
 
 logger = logging.get_logger(__name__)
 
