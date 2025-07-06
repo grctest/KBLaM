@@ -122,10 +122,14 @@ class KblamGemma3nAttention(Gemma3nTextAttention):
 class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
     """Custom decoder layer for Gemma-3N that uses the KblamGemma3nAttention."""
     def __init__(self, config, layer_idx: int):
+        # The parent class needs the text_config.
         text_config = config.text_config if hasattr(config, 'text_config') else config
         super().__init__(text_config, layer_idx)
-        self.full_config = config  # Store full config for KBLaM-specific logic if needed
-        self.self_attn = KblamGemma3nAttention(text_config, layer_idx)  # Always pass text_config
+        
+        # The custom attention layer needs the *full* config to properly initialize its own parent.
+        self.self_attn = KblamGemma3nAttention(config, layer_idx)
+        
+        # The rest of the layers are standard and need the text_config.
         self.mlp = Gemma3nTextMLP(text_config, layer_idx)
         self.input_layernorm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
         self.post_attention_layernorm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
