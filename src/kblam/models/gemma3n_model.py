@@ -261,7 +261,8 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
         output_hidden_states: bool = None,
         return_dict: bool = None,
         labels: torch.LongTensor = None,
-        kb_embeds: torch.FloatTensor = None,
+        kb_kvs: torch.FloatTensor = None,
+        kb_config: KBLaMConfig = None,
         **kwargs,
     ):
         if position_ids is None and input_ids is not None:
@@ -276,19 +277,69 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
         use_cache = use_cache if use_cache is not None else self.config.text_config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.text_config.use_return_dict
 
-        outputs: BaseModelOutputWithPast = self.text_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            kb_embeds=kb_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+        # The core of the forward pass is now customized for KBLaM.
+        # Instead of a single call to self.text_model, we manually iterate through layers
+        # to inject the knowledge base embeddings at the correct locations.
+
+        if inputs_embeds is None:
+            inputs_embeds = self.text_model.embed_tokens(input_ids)
+
+        hidden_states = inputs_embeds
+        
+        # The top_k_kb value from the eval script needs to be passed to the model
+        if kb_config and kb_config.top_k_kb > 0:
+            kb_kvs = kb_kvs[:, :kb_config.top_k_kb, :] if kb_kvs is not None else None
+
+        # Decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        next_decoder_cache = () if use_cache else None
+
+        for idx, decoder_layer in enumerate(self.text_model.layers):
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            
+            # Inject KB embeddings at specified layers
+            if kb_kvs is not None and kb_config is not None and idx > 0 and idx % kb_config.kb_layer_frequency == 0:
+                # Add knowledge to the hidden states.
+                # This is a simplified example; you may need a more sophisticated fusion method.
+                hidden_states = hidden_states + kb_kvs
+
+            past_key_value = past_key_values[idx] if past_key_values is not None else None
+
+            layer_outputs = decoder_layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+            )
+
+            hidden_states = layer_outputs[0]
+
+            if use_cache:
+                next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
+        hidden_states = self.text_model.norm(hidden_states)
+
+        # Add last hidden state
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        next_cache = next_decoder_cache if use_cache else None
+
+        # The CausalLMOutputWithPast object is the standard output format for Hugging Face models.
+        outputs = CausalLMOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=next_cache,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
         )
-        hidden_states = outputs.last_hidden_state
+
         logits = self.lm_head(hidden_states)
 
         loss = None

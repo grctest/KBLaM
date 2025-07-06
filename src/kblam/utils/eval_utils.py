@@ -125,19 +125,27 @@ def answer_question(
         kb_config.top_k_kb = topk_size
 
     with torch.autograd.no_grad():
-        outputs = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_masks,
-            kb_kvs=kb,
-            max_new_tokens=150,
-            tokenizer=tokenizer,
-            output_attentions=True,
-            kb_config=kb_config,
-            pad_token_id=tokenizer.eos_token_id,
-            save_attention_weights=save_attention_weights,
-            attention_file_base_name=attention_file_base_name,
-            attention_save_loc=attention_save_loc,
-        ).squeeze()
+        # All models now support the custom KB arguments, so we can unify the generate call.
+        generate_kwargs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_masks,
+            "kb_kvs": kb,
+            "max_new_tokens": 150,
+            "tokenizer": tokenizer,
+            "output_attentions": True,
+            "kb_config": kb_config,
+            "pad_token_id": tokenizer.eos_token_id,
+            "save_attention_weights": save_attention_weights,
+            "attention_file_base_name": attention_file_base_name,
+            "attention_save_loc": attention_save_loc,
+        }
+        # The generate method in some models might not accept all these arguments.
+        # We can filter them based on the model's generate method signature.
+        import inspect
+        sig = inspect.signature(model.generate)
+        filtered_kwargs = {k: v for k, v in generate_kwargs.items() if k in sig.parameters}
+        
+        outputs = model.generate(**filtered_kwargs).squeeze()
     outputs = tokenizer.decode(outputs, skip_special_tokens=False)
 
     for m in model_prune_format_mapping:

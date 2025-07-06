@@ -73,7 +73,8 @@ def perform_eval(
     for k, v in zip(key_str, value_str):
         prompt_strs += f"{k} is {v}; "
 
-    kb_embedding = kb_retriever.get_key_embeddings(kb_idx)
+    with torch.no_grad():
+        kb_embedding = kb_retriever.get_key_embeddings(kb_idx)
 
     model_outputs = []
     answers = []
