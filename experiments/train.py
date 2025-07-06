@@ -236,15 +236,18 @@ def main():
         hidden_size = model.config.hidden_size
         num_hidden_layers = model.config.num_hidden_layers
 
+
     encoder = KBEncoder(
         encoder_name=encoder_spec,
         projector_type="linear",
         endpoint_url="",
-        out_dim=hidden_size
-        * (num_hidden_layers // kb_token_layer_frequency + 1),  # type: ignore
+        out_dim=hidden_size * (num_hidden_layers // kb_token_layer_frequency + 1),  # type: ignore
         frozen_base_model=True,
         device=device,
     )
+    # Ensure KBEncoder is always trainable (fixes grad_fn error)
+    for param in encoder.parameters():
+        param.requires_grad = True
 
     if model_dir_to_resume:
         encoder_dir = model_dir_to_resume + "_encoder"
