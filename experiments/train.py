@@ -295,14 +295,16 @@ def main():
 
     logger.info("Model ready")
 
-    # --- GEMMA3N: Save processor/preprocessor configs to output dir if present ---
+    # --- GEMMA3N: Save processor/preprocessor configs to correct model subdir ---
     if args.llm_type == "gemma3n":
-        # Try to load processor/preprocessor from base model and save to output dir
+        # Save into the same directory as the model weights/checkpoints
+        model_output_dir = os.path.join(model_save_dir, llm_ckpt_name)
+        pathlib.Path(model_output_dir).mkdir(parents=True, exist_ok=True)
         from transformers import AutoProcessor
         try:
             processor = AutoProcessor.from_pretrained(hf_model_spec, trust_remote_code=True)
-            processor.save_pretrained(model_save_dir)
-            logger.info("Saved processor/preprocessor config to output directory.")
+            processor.save_pretrained(model_output_dir)
+            logger.info(f"Saved processor/preprocessor config to {model_output_dir}.")
         except Exception as e:
             logger.warning(f"Could not save processor/preprocessor config: {e}")
 
