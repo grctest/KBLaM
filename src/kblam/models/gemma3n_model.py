@@ -182,6 +182,11 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
 
     def __init__(self, config: Gemma3nConfig):
         super().__init__(config)
+        # Ensure critical fields are present at the top level for Hugging Face compatibility
+        if hasattr(config, 'text_config'):
+            for attr in ["num_hidden_layers", "hidden_size", "vocab_size"]:
+                if hasattr(config.text_config, attr):
+                    setattr(config, attr, getattr(config.text_config, attr))
         self.text_model = KblamGemma3nTextModel(config)
         self.text_projection = nn.Linear(config.text_config.hidden_size, config.text_config.hidden_size, bias=False)
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
