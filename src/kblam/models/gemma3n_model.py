@@ -150,13 +150,20 @@ class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
 
 class KblamGemma3nTextModel(Gemma3nTextModel):
     """The text-processing component of the KBLAM Gemma-3N model."""
-    def __init__(self, config):
-        # Correctly initialize the parent with text_config
-        super().__init__(config.text_config if hasattr(config, 'text_config') else config)
-        # Replace layers with KBLaM versions, passing the full config
+    def __init__(self, config: Gemma3nConfig):
+        # The parent Gemma3nTextModel expects the nested text_config.
+        text_config = config.text_config if hasattr(config, 'text_config') else config
+        super().__init__(text_config)
+        
+        # However, our custom layers need the full top-level config to be passed down
+        # so they can correctly initialize their own parents.
+        # We also use the full config to determine the number of layers.
         self.layers = nn.ModuleList(
-            [KblamGemma3nDecoderLayer(config, layer_idx) for layer_idx in range(self.config.num_hidden_layers)]
+            [KblamGemma3nDecoderLayer(config, layer_idx) for layer_idx in range(config.text_config.num_hidden_layers)]
         )
+        # We must explicitly re-assign the full config to self.config, because the parent's __init__
+        # will have set it to the text_config.
+        self.config = config
 
     def forward(self, input_ids=None, attention_mask=None, position_ids=None, past_key_values=None, inputs_embeds=None, kb_embeds=None, **kwargs):
         # Standard embedding
