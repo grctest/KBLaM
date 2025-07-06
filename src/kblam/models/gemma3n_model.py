@@ -54,7 +54,7 @@ class KblamGemma3nAttention(Gemma3nTextAttention):
     """
     def __init__(self, config, layer_idx: int):
         # Always use the correct config type
-        if hasattr(config, 'text_config') and isinstance(config.text_config, Gemma3nConfig.text_config.__class__):
+        if hasattr(config, 'text_config'):
             text_config = config.text_config
         else:
             text_config = config
