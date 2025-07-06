@@ -50,164 +50,132 @@ logger = logging.get_logger(__name__)
 class KblamGemma3nAttention(Gemma3nTextAttention):
     """
     Custom attention mechanism for Gemma-3N that integrates KB information.
-    Extend this class to add KBLaM logic as needed.
+    Follows official Hugging Face patterns: strict config typing, attribute propagation, and subclassing.
     """
     def __init__(self, config, layer_idx: int):
-        # Always extract text_config for parent, but keep full config for KBLaM logic
-        text_config = config.text_config if hasattr(config, 'text_config') else config
+        # Always use the correct config type
+        if hasattr(config, 'text_config') and isinstance(config.text_config, Gemma3nConfig.text_config.__class__):
+            text_config = config.text_config
+        else:
+            text_config = config
+        assert hasattr(text_config, "num_attention_heads"), f"Config missing num_attention_heads: {text_config}"
+        assert hasattr(text_config, "head_dim"), f"Config missing head_dim: {text_config}"
         super().__init__(text_config, layer_idx)
-        self.full_config = config  # Store full config for KBLaM-specific logic if needed
-        # Project KB embeddings to match attention key/value dimension
-        self.kb_proj = nn.Linear(text_config.hidden_size, self.head_dim, bias=False)
+        # KBLaM extension: add KB projection for concat+proj fusion
+        self.kb_proj = nn.Linear(text_config.hidden_size, text_config.head_dim, bias=False)
+        # Optional: separable query head
+        self.separable_query = getattr(text_config, 'kblam_separable_query', False)
+        if self.separable_query:
+            self.kb_query_proj = nn.Linear(text_config.hidden_size, text_config.head_dim, bias=False)
+        # Optional: length scaling
+        self.length_scaling = getattr(text_config, 'kblam_length_scaling', False)
+        self.kb_layer_frequency = getattr(text_config, 'kb_layer_frequency', 1)
+        self.kb_fusion_method = getattr(text_config, 'kb_fusion_method', 'concat_proj')
+        self.kb_layers = set(getattr(text_config, 'kb_layers', []))
+        self.layer_idx = layer_idx
 
     def forward(self, hidden_states, position_embeddings=None, attention_mask=None, past_key_value=None, kb_embeds=None, **kwargs):
-        # Standard attention projections
-        query_states = self.q_proj(hidden_states).view(hidden_states.size(0), -1, self.num_attention_heads, self.head_dim)
-        query_states = self.q_norm(query_states)
-        if position_embeddings is not None:
-            cos, sin = position_embeddings
-            query_states = self._apply_rope(query_states, cos, sin)
-        query_states = query_states.transpose(1, 2)
+        # Determine if this layer should inject KB (config-driven)
+        inject_kb = False
+        if len(self.kb_layers) > 0:
+            inject_kb = self.layer_idx in self.kb_layers
+        else:
+            inject_kb = (self.layer_idx % self.kb_layer_frequency == 0)
 
-        key_states = self.k_proj(hidden_states).view(hidden_states.size(0), -1, self.num_key_value_heads, self.head_dim)
-        key_states = self.k_norm(key_states)
-        if position_embeddings is not None:
-            cos, sin = position_embeddings
-            key_states = self._apply_rope(key_states, cos, sin)
-        key_states = key_states.transpose(1, 2)
-
-        value_states = self.v_proj(hidden_states).view(hidden_states.size(0), -1, self.num_key_value_heads, self.head_dim)
-        value_states = self.v_norm(value_states)
-        value_states = value_states.transpose(1, 2)
-
-        # KBLaM: Fuse KB embeddings as extra keys/values if provided
-        if kb_embeds is not None:
-            # Project KB embeddings to key/value space
-            kb_keys = self.kb_proj(kb_embeds).unsqueeze(1)  # (batch, 1, head_dim)
-            kb_values = self.kb_proj(kb_embeds).unsqueeze(1)
-            # Repeat for all heads
-            kb_keys = kb_keys.expand(-1, self.num_key_value_heads, -1)
-            kb_values = kb_values.expand(-1, self.num_key_value_heads, -1)
-            # Concatenate to sequence
-            key_states = torch.cat([key_states, kb_keys], dim=2)
-            value_states = torch.cat([value_states, kb_values], dim=2)
-
-        # Standard attention computation
-        attn_output, attn_weights = self._attention_forward(query_states, key_states, value_states, attention_mask)
-        attn_output = attn_output.transpose(1, 2).contiguous().view(hidden_states.size(0), -1, self.num_attention_heads * self.head_dim)
-        attn_output = self.o_proj(attn_output)
-        return attn_output, attn_weights
-
-    def _apply_rope(self, x, cos, sin):
-        # Apply rotary position embedding (same as Gemma3nTextAttention)
-        cos = cos.unsqueeze(1)
-        sin = sin.unsqueeze(1)
-        return (x * cos) + (self._rotate_half(x) * sin)
-
-    def _rotate_half(self, x):
-        x1 = x[..., : x.shape[-1] // 2]
-        x2 = x[..., x.shape[-1] // 2 :]
-        return torch.cat((-x2, x1), dim=-1)
-
-    def _attention_forward(self, query, key, value, attention_mask):
-        # Standard scaled dot-product attention
-        attn_weights = torch.matmul(query, key.transpose(-2, -1)) * (self.head_dim ** -0.5)
-        if attention_mask is not None:
-            attn_weights = attn_weights + attention_mask
-        attn_weights = torch.nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
-        attn_output = torch.matmul(attn_weights, value)
-        return attn_output, attn_weights
-
-
-class KblamGemma3nDecoderLayer(nn.Module):
-    """A completely custom decoder layer that correctly instantiates KblamGemma3nAttention."""
-    def __init__(self, config: Gemma3nConfig, layer_idx: int):
-        super().__init__()
-        # We must build the layer from scratch to control instantiation.
-        text_config = config.text_config if hasattr(config, 'text_config') else config
-        
-        self.self_attn = KblamGemma3nAttention(config, layer_idx)
-        
-        self.mlp = Gemma3nTextMLP(text_config, layer_idx)
-        self.input_layernorm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
-        self.post_attention_layernorm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
-
-    def forward(self, hidden_states, position_embeddings, attention_mask=None, past_key_value=None, kb_embeds=None, **kwargs):
-        # Layer norm
-        normed_hidden = self.input_layernorm(hidden_states)
-        
-        # KBLaM: Pass kb_embeds to our custom attention
-        attn_output, attn_weights = self.self_attn(
-            normed_hidden, 
-            position_embeddings=position_embeddings, 
-            attention_mask=attention_mask, 
-            past_key_value=past_key_value, 
-            kb_embeds=kb_embeds, 
+        # Optionally, fuse KB embeddings as extra keys/values if provided and enabled
+        if kb_embeds is not None and inject_kb:
+            if self.kb_fusion_method == 'concat_proj':
+                # Project KB embeddings to key/value space
+                kb_keys = self.kb_proj(kb_embeds).unsqueeze(1)
+                kb_values = self.kb_proj(kb_embeds).unsqueeze(1)
+                # Expand to match heads if needed (assume GQA/MQA)
+                kb_keys = kb_keys.expand(-1, self.num_key_value_heads, -1)
+                kb_values = kb_values.expand(-1, self.num_key_value_heads, -1)
+                # Save for later use in the parent's forward
+                kwargs['extra_kb_keys'] = kb_keys
+                kwargs['extra_kb_values'] = kb_values
+            elif self.kb_fusion_method == 'separable_query' and self.separable_query:
+                # Use a separate query head for KB
+                kb_queries = self.kb_query_proj(kb_embeds).unsqueeze(1)
+                kwargs['extra_kb_queries'] = kb_queries
+            # Add other fusion methods as needed
+            # Optional: length scaling
+            if self.length_scaling:
+                scale = (hidden_states.size(1) + kb_embeds.size(1)) ** 0.5 / (hidden_states.size(1) ** 0.5)
+                hidden_states = hidden_states * scale
+        return super().forward(
+            hidden_states,
+            position_embeddings=position_embeddings,
+            attention_mask=attention_mask,
+            past_key_value=past_key_value,
             **kwargs
         )
-        
-        # First residual connection
-        hidden_states = hidden_states + attn_output
-        
-        # MLP
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
 
-        return hidden_states, attn_weights
+
+class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
+    """
+    Custom decoder layer for KBLaM, following official Gemma3nTextDecoderLayer structure.
+    Only overrides attention to use KblamGemma3nAttention.
+    """
+    def __init__(self, config: Gemma3nConfig, layer_idx: int):
+        # Use the correct config type for parent
+        text_config = config.text_config if hasattr(config, 'text_config') else config
+        super().__init__(text_config, layer_idx)
+        # Replace self_attn with KBLaM version
+        self.self_attn = KblamGemma3nAttention(config, layer_idx)
+        # Save config for forward
+        self.kb_layer_frequency = getattr(text_config, 'kb_layer_frequency', 1)
+        self.kb_layers = set(getattr(text_config, 'kb_layers', []))
+        self.layer_idx = layer_idx
+
+    def forward(self, *args, kb_embeds=None, **kwargs):
+        # Pass kb_embeds to attention if this layer is selected for KB fusion
+        inject_kb = False
+        if len(self.kb_layers) > 0:
+            inject_kb = self.layer_idx in self.kb_layers
+        else:
+            inject_kb = (self.layer_idx % self.kb_layer_frequency == 0)
+        if inject_kb:
+            kwargs['kb_embeds'] = kb_embeds
+        return super().forward(*args, **kwargs)
 
 
 class KblamGemma3nTextModel(Gemma3nTextModel):
-    """The text-processing component of the KBLAM Gemma-3N model."""
+    """
+    The text-processing component of the KBLAM Gemma-3N model.
+    Subclasses the official Gemma3nTextModel, but replaces decoder layers with KBLaM versions.
+    """
     def __init__(self, config: Gemma3nConfig):
-        # The parent Gemma3nTextModel expects the nested text_config.
         text_config = config.text_config if hasattr(config, 'text_config') else config
-        
-        # Trick the parent constructor into not building the default layers.
-        original_num_hidden_layers = text_config.num_hidden_layers
-        text_config.num_hidden_layers = 0
-        
+        # Call parent constructor (builds layers, but we will replace them)
         super().__init__(text_config)
-        
-        # Restore the original value and the full config.
-        text_config.num_hidden_layers = original_num_hidden_layers
         self.config = config
+        # Replace layers with KBLaM versions
+        self.layers = nn.ModuleList([
+            KblamGemma3nDecoderLayer(config, i) for i in range(text_config.num_hidden_layers)
+        ])
 
-        # Now, build our custom layers, which will be the only ones that ever exist.
-        self.layers = nn.ModuleList(
-            [KblamGemma3nDecoderLayer(config, layer_idx) for layer_idx in range(config.text_config.num_hidden_layers)]
-        )
-        # Re-initialize weights for the newly created layers
-        self.post_init()
-
-    def forward(self, input_ids=None, attention_mask=None, position_ids=None, past_key_values=None, inputs_embeds=None, kb_embeds=None, **kwargs):
-        # Standard embedding
-        if input_ids is not None:
-            inputs_embeds = self.embed_tokens(input_ids)
-        hidden_states = inputs_embeds
-        # Position embeddings (assume precomputed for simplicity)
-        position_embeddings = None
-        if hasattr(self, 'rotary_emb'):
-            position_embeddings = self.rotary_emb(hidden_states, position_ids)
-        # Pass through all layers, injecting KB embeddings
-        all_attn_weights = []
-        for layer in self.layers:
-            hidden_states, attn_weights = layer(hidden_states, position_embeddings, attention_mask=attention_mask, past_key_value=past_key_values, kb_embeds=kb_embeds, **kwargs)
-            all_attn_weights.append(attn_weights)
-        hidden_states = self.norm(hidden_states)
-        return BaseModelOutputWithPast(
-            last_hidden_state=hidden_states,
+    def forward(self, input_ids=None, attention_mask=None, position_ids=None, past_key_values=None, inputs_embeds=None, kb_embeds=None, use_cache=None, output_attentions=None, output_hidden_states=None, return_dict=None, **kwargs):
+        # Pass kb_embeds to all layers (each layer decides if it uses it)
+        return super().forward(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
             past_key_values=past_key_values,
-            hidden_states=None,
-            attentions=all_attn_weights,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            kb_embeds=kb_embeds,
+            **kwargs
         )
 
 
 class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMixin):
     """
     The main KBLAM model for conditional generation using the Gemma-3N architecture.
-    It integrates a text model (based on Gemma-2) with vision and audio models.
+    Subclasses the official model, but uses KblamGemma3nTextModel for text.
     """
     _auto_class = "AutoModelForCausalLM"
     config_class = Gemma3nConfig
@@ -249,9 +217,6 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
         kb_embeds: torch.FloatTensor = None,
         **kwargs,
     ):
-        """
-        The forward pass of the model with KBLaM support.
-        """
         if position_ids is None and input_ids is not None:
             device = input_ids.device
             seq_length = input_ids.shape[1]
