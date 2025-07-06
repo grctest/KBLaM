@@ -57,7 +57,7 @@ def parse_args():
         "--llm_type",
         type=str,
         default="phi3",
-        choices=["llama3", "phi3", "bitnet"],
+        choices=["llama3", "phi3", "bitnet", "gemma3n"],
         help="Type of language model to use",
     )
     parent_parser.add_argument(

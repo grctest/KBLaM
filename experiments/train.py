@@ -292,7 +292,19 @@ def main():
         value_embds=value_embds,  # type: ignore
     )
 
+
     logger.info("Model ready")
+
+    # --- GEMMA3N: Save processor/preprocessor configs to output dir if present ---
+    if args.llm_type == "gemma3n":
+        # Try to load processor/preprocessor from base model and save to output dir
+        from transformers import AutoProcessor
+        try:
+            processor = AutoProcessor.from_pretrained(hf_model_spec, trust_remote_code=True)
+            processor.save_pretrained(model_save_dir)
+            logger.info("Saved processor/preprocessor config to output directory.")
+        except Exception as e:
+            logger.warning(f"Could not save processor/preprocessor config: {e}")
 
     # Get the training started
     llm_ckpt_name = f"{prefix_string}KeyFrom{key_embd_src}_{encoder_spec}_{dataset_name}_{llm_type}"
