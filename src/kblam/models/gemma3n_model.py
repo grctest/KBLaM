@@ -184,13 +184,9 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
         super().__init__(config)
         # Ensure critical fields are present at the top level for Hugging Face compatibility
         if hasattr(config, 'text_config'):
-            # Add all critical fields needed by Hugging Face at the top level
-            for attr in [
-                "num_hidden_layers", "hidden_size", "vocab_size", "sliding_window",
-                "max_position_embeddings", "initializer_range", "use_cache", "model_type",
-                "altup_num_inputs"
-            ]:
-                if hasattr(config.text_config, attr):
+            # Copy all attributes from text_config to the top-level config if not already present
+            for attr in vars(config.text_config):
+                if not hasattr(config, attr):
                     setattr(config, attr, getattr(config.text_config, attr))
         self.text_model = KblamGemma3nTextModel(config)
         self.text_projection = nn.Linear(config.text_config.hidden_size, config.text_config.hidden_size, bias=False)
