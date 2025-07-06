@@ -53,8 +53,10 @@ class KblamGemma3nAttention(Gemma3nTextAttention):
     Extend this class to add KBLaM logic as needed.
     """
     def __init__(self, config, layer_idx: int):
+        # Always extract text_config for parent, but keep full config for KBLaM logic
         text_config = config.text_config if hasattr(config, 'text_config') else config
         super().__init__(text_config, layer_idx)
+        self.full_config = config  # Store full config for KBLaM-specific logic if needed
         # Project KB embeddings to match attention key/value dimension
         self.kb_proj = nn.Linear(text_config.hidden_size, self.head_dim, bias=False)
 
@@ -122,7 +124,8 @@ class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
     def __init__(self, config, layer_idx: int):
         text_config = config.text_config if hasattr(config, 'text_config') else config
         super().__init__(text_config, layer_idx)
-        self.self_attn = KblamGemma3nAttention(text_config, layer_idx)
+        self.full_config = config  # Store full config for KBLaM-specific logic if needed
+        self.self_attn = KblamGemma3nAttention(text_config, layer_idx)  # Always pass text_config
         self.mlp = Gemma3nTextMLP(text_config, layer_idx)
         self.input_layernorm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
         self.post_attention_layernorm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
