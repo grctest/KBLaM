@@ -122,7 +122,7 @@ class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
     def __init__(self, config, layer_idx: int):
         text_config = config.text_config if hasattr(config, 'text_config') else config
         super().__init__(text_config, layer_idx)
-        self.self_attn = KblamGemma3nAttention(config, layer_idx)
+        self.self_attn = KblamGemma3nAttention(text_config, layer_idx)
         self.mlp = Gemma3nTextMLP(text_config, layer_idx)
         self.input_layernorm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
         self.post_attention_layernorm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
