@@ -119,17 +119,15 @@ class KblamGemma3nAttention(Gemma3nTextAttention):
         return attn_output, attn_weights
 
 
-class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
-    """Custom decoder layer for Gemma-3N that uses the KblamGemma3nAttention."""
-    def __init__(self, config, layer_idx: int):
-        # The parent class needs the text_config.
+class KblamGemma3nDecoderLayer(nn.Module):
+    """A completely custom decoder layer that correctly instantiates KblamGemma3nAttention."""
+    def __init__(self, config: Gemma3nConfig, layer_idx: int):
+        super().__init__()
+        # We must build the layer from scratch to control instantiation.
         text_config = config.text_config if hasattr(config, 'text_config') else config
-        super().__init__(text_config, layer_idx)
         
-        # The custom attention layer needs the *full* config to properly initialize its own parent.
         self.self_attn = KblamGemma3nAttention(config, layer_idx)
         
-        # The rest of the layers are standard and need the text_config.
         self.mlp = Gemma3nTextMLP(text_config, layer_idx)
         self.input_layernorm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
         self.post_attention_layernorm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
@@ -137,14 +135,26 @@ class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
     def forward(self, hidden_states, position_embeddings, attention_mask=None, past_key_value=None, kb_embeds=None, **kwargs):
         # Layer norm
         normed_hidden = self.input_layernorm(hidden_states)
-        # KBLaM: Pass kb_embeds to attention
-        attn_output, attn_weights = self.self_attn(normed_hidden, position_embeddings=position_embeddings, attention_mask=attention_mask, past_key_value=past_key_value, kb_embeds=kb_embeds, **kwargs)
-        attn_output = self.post_attention_layernorm(attn_output)
-        # Residual connection
+        
+        # KBLaM: Pass kb_embeds to our custom attention
+        attn_output, attn_weights = self.self_attn(
+            normed_hidden, 
+            position_embeddings=position_embeddings, 
+            attention_mask=attention_mask, 
+            past_key_value=past_key_value, 
+            kb_embeds=kb_embeds, 
+            **kwargs
+        )
+        
+        # First residual connection
         hidden_states = hidden_states + attn_output
+        
         # MLP
-        mlp_output = self.mlp(hidden_states)
-        hidden_states = hidden_states + mlp_output
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+
         return hidden_states, attn_weights
 
 
