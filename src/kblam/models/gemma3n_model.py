@@ -153,13 +153,23 @@ class KblamGemma3nTextModel(Gemma3nTextModel):
     def __init__(self, config: Gemma3nConfig):
         # The parent Gemma3nTextModel expects the nested text_config.
         text_config = config.text_config if hasattr(config, 'text_config') else config
+        
+        # Trick the parent constructor into not building the default layers.
+        original_num_hidden_layers = text_config.num_hidden_layers
+        text_config.num_hidden_layers = 0
+        
         super().__init__(text_config)
-        # Always replace layers with custom ones, even after from_pretrained
+        
+        # Restore the original value and the full config.
+        text_config.num_hidden_layers = original_num_hidden_layers
         self.config = config
-        custom_layers = nn.ModuleList(
+
+        # Now, build our custom layers, which will be the only ones that ever exist.
+        self.layers = nn.ModuleList(
             [KblamGemma3nDecoderLayer(config, layer_idx) for layer_idx in range(config.text_config.num_hidden_layers)]
         )
-        self.layers = custom_layers
+        # Re-initialize weights for the newly created layers
+        self.post_init()
 
     def forward(self, input_ids=None, attention_mask=None, position_ids=None, past_key_values=None, inputs_embeds=None, kb_embeds=None, **kwargs):
         # Standard embedding
