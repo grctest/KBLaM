@@ -228,6 +228,12 @@ def main():
         for _, param in model.named_parameters():  # type: ignore
             param.requires_grad = False
 
+    # For all models, unfreeze all trainable parameters (KB-specific modules)
+    # This ensures consistency and fixes the grad_fn error.
+    if hasattr(model, "unfreeze_all"):
+        model.unfreeze_all()
+
+
     # Set up the encoder
     if llm_type == "gemma3n":
         hidden_size = model.config.text_config.hidden_size
