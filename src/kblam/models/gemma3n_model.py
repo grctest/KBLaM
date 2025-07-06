@@ -173,6 +173,43 @@ class KblamGemma3nTextModel(Gemma3nTextModel):
 
 
 class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMixin):
+    def freeze_backbone(self):
+        """
+        Freeze all Gemma-3N backbone parameters, leaving KBLaM-specific modules trainable.
+        This matches KBLaM Llama/Phi/BitNet best practices.
+        """
+        n_frozen = 0
+        n_trainable = 0
+        for name, param in self.named_parameters():
+            # Freeze all backbone (text_model) except KBLaM modules
+            if name.startswith('text_model.') and not (
+                'kb_proj' in name or 'kb_query_proj' in name
+            ):
+                param.requires_grad = False
+                n_frozen += 1
+            else:
+                param.requires_grad = True
+                n_trainable += 1
+        logger.info(f"Froze {n_frozen} backbone params, left {n_trainable} KBLaM params trainable.")
+
+    def unfreeze_all(self):
+        """
+        Unfreeze all parameters (for full finetuning, not typical for KBLaM).
+        """
+        for param in self.parameters():
+            param.requires_grad = True
+        logger.info("All model parameters set to requires_grad=True.")
+
+    def check_trainable_parameters(self):
+        """
+        Utility: Warn if no parameters require grad (to help debug 'no grad_fn' errors).
+        """
+        n_trainable = sum(p.requires_grad for p in self.parameters())
+        if n_trainable == 0:
+            logger.warning("All model parameters are frozen (requires_grad=False). Loss will not have grad_fn. Unfreeze at least some parameters to train.")
+        else:
+            logger.info(f"Number of trainable parameters: {n_trainable}")
+
     """
     The main KBLAM model for conditional generation using the Gemma-3N architecture.
     Subclasses the official model, but uses KblamGemma3nTextModel for text.
@@ -207,6 +244,10 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
 
     def set_input_embeddings(self, value):
         self.text_model.embed_tokens = value
+
+    # NOTE: To match KBLaM best practices, call model.freeze_backbone() after instantiation.
+    # This will freeze all Gemma-3N backbone parameters and leave only KBLaM-specific modules trainable.
+    # Do NOT freeze all parameters unless you want inference-only. To train, only freeze backbone or specific modules as needed.
 
     def forward(
         self,

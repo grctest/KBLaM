@@ -215,15 +215,18 @@ def main():
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
         )
+        # Freeze only the backbone, leave KBLaM modules trainable
+        model.freeze_backbone()
     else:
         raise ValueError(f"LLM type {args.llm_type} not recognised")
 
     logger.info(model.config)  # type: ignore
 
     model.eval()  # type: ignore
-    # freeze model
-    for _, param in model.named_parameters():  # type: ignore
-        param.requires_grad = False
+    # For other models, freeze all parameters (legacy behavior)
+    if args.llm_type != "gemma3n":
+        for _, param in model.named_parameters():  # type: ignore
+            param.requires_grad = False
 
     # Set up the encoder
     if llm_type == "gemma3n":
