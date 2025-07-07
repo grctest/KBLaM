@@ -123,6 +123,8 @@ class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
         # Use the correct config type for parent
         text_config = config.text_config if hasattr(config, 'text_config') else config
         super().__init__(text_config, layer_idx)
+        # Manually initialize use_altup, as it's part of the parent class logic
+        self.use_altup = getattr(text_config, "use_altup", True)
         # Replace self_attn with KBLaM version
         self.self_attn = KblamGemma3nAttention(config, layer_idx)
         # Save config for forward
