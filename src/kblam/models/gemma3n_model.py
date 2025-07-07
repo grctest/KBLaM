@@ -23,6 +23,7 @@ library.
 
 import torch
 from torch import nn
+import copy
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast
 from transformers.models.gemma3n.modeling_gemma3n import (
@@ -33,6 +34,7 @@ from transformers.models.gemma3n.modeling_gemma3n import (
     Gemma3nTextAttention,
     Gemma3nTextMLP,
     Gemma3nRMSNorm,
+    Gemma3nTextRotaryEmbedding,
 )
 from transformers.generation.utils import GenerationMixin
 from transformers.utils import logging
@@ -145,18 +147,45 @@ class KblamGemma3nTextModel(Gemma3nTextModel):
     The text-processing component of the KBLAM Gemma-3N model.
     Subclasses the official Gemma3nTextModel, but replaces decoder layers with KBLaM versions.
     """
-    def __init__(self, config: Gemma3nConfig):
-        text_config = config.text_config if hasattr(config, 'text_config') else config
-        # Call parent constructor (builds layers, but we will replace them)
-        super().__init__(text_config)
+    def __init__(self, config: KBLaMConfig):
+        text_config = getattr(config, "text_config", None)
+        if text_config:
+            super().__init__(text_config)
+        else:
+            # This case might be for loading from a KBLaM-saved checkpoint
+            # where text_config isn't nested. We'll assume config is compatible.
+            super().__init__(config)
         self.config = config
+
+        # KBLaM-specific attributes
+        self.kb_layer_frequency = getattr(config, 'kb_layer_frequency', 1)
+
+        # The following logic is adapted from the original Gemma3nTextModel.__init__
+        # to ensure all necessary attributes are correctly initialized on this subclass.
+        self.embed_tokens = nn.Embedding(text_config.vocab_size, text_config.hidden_size, text_config.padding_idx)
+        
+        # Replicating the RoPE creation from the reference implementation
+        self.rotary_emb = Gemma3nTextRotaryEmbedding(config=text_config)
+        
+        # Create a deepcopy of the config for the local RoPE, as per the reference
+        local_config = copy.deepcopy(text_config)
+        local_config.rope_theta = getattr(text_config, 'rope_local_base_freq', 10000.0)
+        if hasattr(local_config, 'rope_scaling'):
+            local_config.rope_scaling['rope_type'] = 'default'
+        else:
+            local_config.rope_scaling = {'rope_type': 'default'}
+        self.rotary_emb_local = Gemma3nTextRotaryEmbedding(config=local_config)
+
+        self.per_layer_input_embeddings = nn.Embedding(text_config.num_hidden_layers, text_config.hidden_size)
+        
         # Replace layers with KBLaM versions
         self.layers = nn.ModuleList([
             KblamGemma3nDecoderLayer(config, i) for i in range(text_config.num_hidden_layers)
         ])
+        self.norm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
 
     def forward(self, input_ids=None, attention_mask=None, position_ids=None, past_key_values=None, inputs_embeds=None, kb_embeds=None, use_cache=None, output_attentions=None, output_hidden_states=None, return_dict=None, **kwargs):
-        # Pass kb_embeds to all layers (each layer decides if it uses it)
+        # This forward pass is now simplified as the main logic is in KblamGemma3nForConditionalGeneration
         return super().forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -167,153 +196,167 @@ class KblamGemma3nTextModel(Gemma3nTextModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
-            kb_embeds=kb_embeds,
+            # kb_embeds is passed up to the layer that needs it
             **kwargs
         )
 
 
 class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMixin):
-    def freeze_backbone(self):
-        """
-        Freeze all Gemma-3N backbone parameters, leaving KBLaM-specific modules trainable.
-        This matches KBLaM Llama/Phi/BitNet best practices.
-        """
-        n_frozen = 0
-        n_trainable = 0
-        for name, param in self.named_parameters():
-            # Freeze all backbone (text_model) except KBLaM modules
-            if name.startswith('text_model.') and not (
-                'kb_proj' in name or 'kb_query_proj' in name
-            ):
-                param.requires_grad = False
-                n_frozen += 1
-            else:
-                param.requires_grad = True
-                n_trainable += 1
-        logger.info(f"Froze {n_frozen} backbone params, left {n_trainable} KBLaM params trainable.")
-
-    def unfreeze_all(self):
-        """
-        Unfreeze all parameters (for full finetuning, not typical for KBLaM).
-        """
-        for param in self.parameters():
-            param.requires_grad = True
-        logger.info("All model parameters set to requires_grad=True.")
-
-    def check_trainable_parameters(self):
-        """
-        Utility: Warn if no parameters require grad (to help debug 'no grad_fn' errors).
-        """
-        n_trainable = sum(p.requires_grad for p in self.parameters())
-        if n_trainable == 0:
-            logger.warning("All model parameters are frozen (requires_grad=False). Loss will not have grad_fn. Unfreeze at least some parameters to train.")
-        else:
-            logger.info(f"Number of trainable parameters: {n_trainable}")
-
     """
-    The main KBLAM model for conditional generation using the Gemma-3N architecture.
-    Subclasses the official model, but uses KblamGemma3nTextModel for text.
+    The main KBLAM model for Gemma-3N, designed for conditional generation tasks.
+    This class integrates the KB-aware text model with a language modeling head.
+    It also overrides the `forward` and `prepare_inputs_for_generation` methods
+    to handle KB-related inputs and logic.
     """
-    _auto_class = "AutoModelForCausalLM"
-    config_class = Gemma3nConfig
-
-    def __init__(self, config: Gemma3nConfig):
+    def __init__(self, config: KBLaMConfig):
         super().__init__(config)
-        # Ensure critical fields are present at the top level for Hugging Face compatibility
-        if hasattr(config, 'text_config'):
-            # Copy all attributes from text_config to the top-level config if not already present
-            for attr in vars(config.text_config):
-                if not hasattr(config, attr):
-                    setattr(config, attr, getattr(config.text_config, attr))
-        self.text_model = KblamGemma3nTextModel(config)
-        self.text_projection = nn.Linear(config.text_config.hidden_size, config.text_config.hidden_size, bias=False)
+        self.config = config
+        self.model = KblamGemma3nTextModel(config)
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
+
+        # Initialize weights and apply final processing
         self.post_init()
-        # Add KBLaM specific attributes to the config if they don't exist.
-        if not hasattr(self.config, "kb_layer_frequency"):
-            logger.info("KBLaM config attributes not found. Initializing from KBLaMConfig.")
-            kblam_config = KBLaMConfig()
-            for key, value in kblam_config.to_dict().items():
-                if not hasattr(self.config, key):
-                    setattr(self.config, key, value)
-                if not hasattr(self.config.text_config, key):
-                    setattr(self.config.text_config, key, value)
 
     def get_input_embeddings(self):
-        return self.text_model.embed_tokens
+        return self.model.embed_tokens
 
     def set_input_embeddings(self, value):
-        self.text_model.embed_tokens = value
+        self.model.embed_tokens = value
 
-    # NOTE: To match KBLaM best practices, call model.freeze_backbone() after instantiation.
-    # This will freeze all Gemma-3N backbone parameters and leave only KBLaM-specific modules trainable.
-    # Do NOT freeze all parameters unless you want inference-only. To train, only freeze backbone or specific modules as needed.
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
+    def set_decoder(self, decoder):
+        self.model = decoder
+
+    def get_decoder(self):
+        return self.model
 
     def forward(
         self,
         input_ids: torch.LongTensor = None,
-        attention_mask: torch.Tensor = None,
-        position_ids: torch.LongTensor = None,
-        past_key_values: list = None,
-        inputs_embeds: torch.FloatTensor = None,
-        use_cache: bool = None,
-        output_attentions: bool = None,
-        output_hidden_states: bool = None,
-        return_dict: bool = None,
-        labels: torch.LongTensor = None,
-        kb_kvs: torch.FloatTensor = None,
-        kb_config: KBLaMConfig = None,
-        **kwargs,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: list[torch.FloatTensor] | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        labels: torch.LongTensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        return_dict: bool | None = None,
+        kb_kvs: list[torch.FloatTensor] | None = None,
+        kb_config: dict | None = None,
     ):
-        if position_ids is None and input_ids is not None:
-            device = input_ids.device
-            seq_length = input_ids.shape[1]
-            position_ids = torch.arange(seq_length, dtype=torch.long, device=device).unsqueeze(0)
+        """
+        The forward pass for the KBLAM Gemma-3N model.
 
-        output_attentions = output_attentions if output_attentions is not None else self.config.text_config.output_attentions
+        This method is a complete override of the base model's forward pass to
+        manually control the flow of information through the decoder layers,
+        allowing for the injection of knowledge base embeddings (`kb_kvs`) at
+        specified intervals.
+
+        Args:
+            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+                Indices of input sequence tokens in the vocabulary.
+            attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Mask to avoid performing attention on padding token indices.
+            position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Indices of positions of each input sequence token in the position embeddings.
+            past_key_values (`list(torch.FloatTensor)`, *optional*):
+                Contains pre-computed hidden-states (key and value pairs) of the attention blocks.
+            inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+                Optionally, use embeddings directly instead of `input_ids`.
+            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Labels for computing the masked language modeling loss.
+            use_cache (`bool`, *optional*):
+                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding.
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers.
+            output_hidden_states (`bool`, *optional*):
+                Whether or not to return the hidden states of all layers.
+            return_dict (`bool`, *optional*):
+                Whether or not to return a `ModelOutput` instead of a plain tuple.
+            kb_kvs (`list(torch.FloatTensor)`, *optional*):
+                A list or tuple of key-value embeddings from the knowledge base.
+                Expected to be of shape (batch_size, num_kb_heads, kb_head_dim).
+            kb_config (`dict`, *optional*):
+                A dictionary containing configuration for KB injection, such as
+                `kb_layer_frequency`.
+
+        Returns:
+            `CausalLMOutputWithPast` or `tuple`: A standard causal LM output object.
+        """
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.text_config.output_hidden_states
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        use_cache = use_cache if use_cache is not None else self.config.text_config.use_cache
-        return_dict = return_dict if return_dict is not None else self.config.text_config.use_return_dict
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        # The core of the forward pass is now customized for KBLaM.
-        # Instead of a single call to self.text_model, we manually iterate through layers
-        # to inject the knowledge base embeddings at the correct locations.
-
+        # The core logic from the original `Gemma3nTextModel.forward` is replicated here
+        # to allow for manual layer-by-layer processing with KB injection.
         if inputs_embeds is None:
-            inputs_embeds = self.text_model.embed_tokens(input_ids)
+            inputs_embeds = self.model.embed_tokens(input_ids)
+
+        if position_ids is None:
+            past_seen_tokens = 0
+            if past_key_values is not None:
+                past_seen_tokens = past_key_values[0][0].shape[2]
+            position_ids = torch.arange(
+                past_seen_tokens,
+                past_seen_tokens + inputs_embeds.shape[1],
+                device=inputs_embeds.device
+            ).unsqueeze(0)
 
         hidden_states = inputs_embeds
         
-        # The top_k_kb value from the eval script needs to be passed to the model
-        if kb_config and kb_config.top_k_kb > 0:
-            kb_kvs = kb_kvs[:, :kb_config.top_k_kb, :] if kb_kvs is not None else None
+        # Get KB configuration
+        kb_layer_frequency = getattr(self.config, 'kb_layer_frequency', 1)
+        if kb_config and 'kb_layer_frequency' in kb_config:
+            kb_layer_frequency = kb_config['kb_layer_frequency']
 
-        # Decoder layers
+        # Prepare for decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         next_decoder_cache = () if use_cache else None
 
-        for idx, decoder_layer in enumerate(self.text_model.layers):
+        # Manually iterate through each decoder layer
+        for idx, decoder_layer in enumerate(self.model.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-            
-            # Inject KB embeddings at specified layers
-            if kb_kvs is not None and kb_config is not None and idx > 0 and idx % kb_config.kb_layer_frequency == 0:
-                # Add knowledge to the hidden states.
-                # This is a simplified example; you may need a more sophisticated fusion method.
-                hidden_states = hidden_states + kb_kvs
+
+            # Determine if KB should be injected at this layer
+            inject_kb = (idx + 1) % kb_layer_frequency == 0
+            kb_embeds_for_layer = None
+            if inject_kb and kb_kvs is not None:
+                # Unpack the tuple of (keys, values)
+                kb_keys, kb_values = kb_kvs
+                # For now, we pass the keys. This might need adjustment based on fusion strategy.
+                kb_embeds_for_layer = kb_keys
 
             past_key_value = past_key_values[idx] if past_key_values is not None else None
 
+            # The following arguments are required by the Gemma3nTextDecoderLayer.forward method.
+            # We must construct them manually.
+            layer_input_embed = self.model.per_layer_input_embeddings(torch.tensor(idx, device=hidden_states.device))
+            
+            # Generate RoPE embeddings for the current hidden states
+            position_embeddings_global = self.model.rotary_emb(hidden_states, position_ids)
+            position_embeddings_local = self.model.rotary_emb_local(hidden_states, position_ids)
+            
             layer_outputs = decoder_layer(
                 hidden_states,
                 attention_mask=attention_mask,
-                position_ids=position_ids,
+                position_embeddings_global=position_embeddings_global,
+                position_embeddings_local=position_embeddings_local,
+                per_layer_input_embedding=layer_input_embed,
                 past_key_value=past_key_value,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
+                kb_embeds=kb_embeds_for_layer, # Pass KB embeds to the layer
             )
 
             hidden_states = layer_outputs[0]
@@ -324,42 +367,51 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
-        hidden_states = self.text_model.norm(hidden_states)
+        hidden_states = self.model.norm(hidden_states)
 
-        # Add last hidden state
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
         next_cache = next_decoder_cache if use_cache else None
 
-        # The CausalLMOutputWithPast object is the standard output format for Hugging Face models.
-        outputs = CausalLMOutputWithPast(
-            last_hidden_state=hidden_states,
+        # Compute final logits
+        logits = self.lm_head(hidden_states)
+
+        loss = None
+        if labels is not None:
+            # Shift so that tokens < n predict n
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            # Enable model parallelism
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss = loss_fct(shift_logits, shift_labels)
+
+        if not return_dict:
+            return tuple(v for v in [logits, next_cache, all_hidden_states, all_self_attns] if v is not None)
+
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
             past_key_values=next_cache,
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
         )
 
-        logits = self.lm_head(hidden_states)
+    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, **kwargs):
+        """
+        Prepares inputs for generation, adding `kb_kvs` and `kb_config` to the
+        model keyword arguments.
+        """
+        model_inputs = super().prepare_inputs_for_generation(input_ids, past_key_values=past_key_values, **kwargs)
 
-        loss = None
-        if labels is not None:
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss_fct = CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
-            shift_labels = shift_labels.view(-1)
-            shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
+        # Add KB-related arguments if they are present in the generation call
+        if "kb_kvs" in kwargs:
+            model_inputs["kb_kvs"] = kwargs["kb_kvs"]
+        if "kb_config" in kwargs:
+            model_inputs["kb_config"] = kwargs["kb_config"]
 
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return (loss,) + output if loss is not None else output
-
-        return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
+        return model_inputs

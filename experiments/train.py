@@ -257,25 +257,26 @@ def main():
         encoder.load_state_dict(torch.load(os.path.join(encoder_dir, "encoder.pt")))
         if args.llm_type == "bitnet":
             config_path = os.path.join(model_dir_to_resume, "kb_config_explicit.json")
-        elif args.llm_type == "gemma3n":
-            # The KBLaM-specific config is saved alongside the main model config
-            config_path = os.path.join(model_dir_to_resume, "config.json")
             kb_config = KBLaMConfig.from_pretrained(config_path)
         else:
-            kb_config = KBLaMConfig.from_pretrained(config_path)
+            # For llama3 and gemma3n, the full config is saved with the model
+            kb_config = KBLaMConfig.from_pretrained(model_dir_to_resume)
+
     else:
         if args.llm_type == "gemma3n":
-            # This is a placeholder, the actual config will be loaded from the model
-            kb_config = Gemma3nConfig(
-                text_config={},
-                vision_config={},
-                audio_config={},
-                sep_query_head=sep_query_head,
-                kb_layer_frequency=kb_token_layer_frequency,
-                kb_length_scaling=length_invariance,
-                kb_max_train_triples=N,
-            )
+            # For gemma3n, load the base config and create a KBLaMConfig from it
+            base_config = Gemma3nConfig.from_pretrained(hf_model_spec)
+            kblam_dict = base_config.to_dict()
+            # Add KBLaM specific attributes
+            kblam_dict.update({
+                "sep_query_head": sep_query_head,
+                "kb_layer_frequency": kb_token_layer_frequency,
+                "kb_length_scaling": length_invariance,
+                "kb_max_train_triples": N,
+            })
+            kb_config = KBLaMConfig(**kblam_dict)
         else:
+            # For other models, create a standard KBLaMConfig
             kb_config = KBLaMConfig(
                 sep_query_head=sep_query_head,
                 kb_layer_frequency=kb_token_layer_frequency,
@@ -293,7 +294,11 @@ def main():
     )
 
 
+
     logger.info("Model ready")
+
+    # Get the training started
+    llm_ckpt_name = f"{prefix_string}KeyFrom{key_embd_src}_{encoder_spec}_{dataset_name}_{llm_type}"
 
     # --- GEMMA3N: Save processor/preprocessor configs to correct model subdir ---
     if args.llm_type == "gemma3n":
@@ -307,9 +312,6 @@ def main():
             logger.info(f"Saved processor/preprocessor config to {model_output_dir}.")
         except Exception as e:
             logger.warning(f"Could not save processor/preprocessor config: {e}")
-
-    # Get the training started
-    llm_ckpt_name = f"{prefix_string}KeyFrom{key_embd_src}_{encoder_spec}_{dataset_name}_{llm_type}"
 
     trainer = Trainer(
         model,  # type: ignore
