@@ -130,7 +130,7 @@ class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
         self.kb_layers = set(getattr(text_config, 'kb_layers', []))
         self.layer_idx = layer_idx
 
-    def forward(self, *args, kb_embeds=None, **kwargs):
+    def forward(self, hidden_states, *args, kb_embeds=None, **kwargs):
         # Pass kb_embeds to attention if this layer is selected for KB fusion
         inject_kb = False
         if len(self.kb_layers) > 0:
@@ -139,7 +139,19 @@ class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
             inject_kb = (self.layer_idx % self.kb_layer_frequency == 0)
         if inject_kb:
             kwargs['kb_embeds'] = kb_embeds
-        return super().forward(*args, **kwargs)
+
+        # Temporarily disable altup for 3D inputs to support text-only training
+        # while preserving multi-modal capabilities for 4D inputs at inference.
+        original_use_altup = self.use_altup
+        if hidden_states.dim() == 3:
+            self.use_altup = False
+
+        output = super().forward(hidden_states, *args, **kwargs)
+
+        # Restore original altup setting
+        self.use_altup = original_use_altup
+
+        return output
 
 
 class KblamGemma3nTextModel(Gemma3nTextModel):
@@ -151,10 +163,17 @@ class KblamGemma3nTextModel(Gemma3nTextModel):
         text_config = getattr(config, "text_config", None)
         if text_config:
             super().__init__(text_config)
+            self.padding_idx = text_config.pad_token_id
+            self.vocab_size = text_config.vocab_size
+            self.embed_tokens = nn.Embedding(text_config.vocab_size, text_config.hidden_size, self.padding_idx)
         else:
             # This case might be for loading from a KBLaM-saved checkpoint
             # where text_config isn't nested. We'll assume config is compatible.
             super().__init__(config)
+            self.padding_idx = config.pad_token_id
+            self.vocab_size = config.vocab_size
+            self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+
         self.config = config
 
         # KBLaM-specific attributes
@@ -162,18 +181,15 @@ class KblamGemma3nTextModel(Gemma3nTextModel):
 
         # The following logic is adapted from the original Gemma3nTextModel.__init__
         # to ensure all necessary attributes are correctly initialized on this subclass.
-        self.embed_tokens = nn.Embedding(text_config.vocab_size, text_config.hidden_size, text_config.padding_idx)
-        
         # Replicating the RoPE creation from the reference implementation
         self.rotary_emb = Gemma3nTextRotaryEmbedding(config=text_config)
         
         # Create a deepcopy of the config for the local RoPE, as per the reference
         local_config = copy.deepcopy(text_config)
         local_config.rope_theta = getattr(text_config, 'rope_local_base_freq', 10000.0)
-        if hasattr(local_config, 'rope_scaling'):
-            local_config.rope_scaling['rope_type'] = 'default'
-        else:
-            local_config.rope_scaling = {'rope_type': 'default'}
+        if not hasattr(local_config, 'rope_scaling') or local_config.rope_scaling is None:
+            local_config.rope_scaling = {}
+        local_config.rope_scaling['rope_type'] = 'default'
         self.rotary_emb_local = Gemma3nTextRotaryEmbedding(config=local_config)
 
         self.per_layer_input_embeddings = nn.Embedding(text_config.num_hidden_layers, text_config.hidden_size)
@@ -216,6 +232,11 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
 
         # Initialize weights and apply final processing
         self.post_init()
+
+    def freeze_backbone(self):
+        for name, param in self.model.named_parameters():
+            if 'kb_proj' not in name and 'kb_query_proj' not in name:
+                param.requires_grad = False
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
@@ -289,12 +310,12 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
         Returns:
             `CausalLMOutputWithPast` or `tuple`: A standard causal LM output object.
         """
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_attentions = output_attentions if output_attentions is not None else getattr(self.config, 'output_attentions', False)
         output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+            output_hidden_states if output_hidden_states is not None else getattr(self.config, 'output_hidden_states', False)
         )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        use_cache = use_cache if use_cache is not None else getattr(self.config, 'use_cache', False)
+        return_dict = return_dict if return_dict is not None else getattr(self.config, 'use_return_dict', True)
 
         # The core logic from the original `Gemma3nTextModel.forward` is replicated here
         # to allow for manual layer-by-layer processing with KB injection.
@@ -315,8 +336,12 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
         
         # Get KB configuration
         kb_layer_frequency = getattr(self.config, 'kb_layer_frequency', 1)
-        if kb_config and 'kb_layer_frequency' in kb_config:
-            kb_layer_frequency = kb_config['kb_layer_frequency']
+        if kb_config is not None:
+            # Accept both dict and config object for kb_config
+            if isinstance(kb_config, dict):
+                kb_layer_frequency = kb_config.get('kb_layer_frequency', kb_layer_frequency)
+            else:
+                kb_layer_frequency = getattr(kb_config, 'kb_layer_frequency', kb_layer_frequency)
 
         # Prepare for decoder layers
         all_hidden_states = () if output_hidden_states else None
@@ -346,13 +371,13 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
             # Generate RoPE embeddings for the current hidden states
             position_embeddings_global = self.model.rotary_emb(hidden_states, position_ids)
             position_embeddings_local = self.model.rotary_emb_local(hidden_states, position_ids)
-            
+
             layer_outputs = decoder_layer(
                 hidden_states,
                 attention_mask=attention_mask,
                 position_embeddings_global=position_embeddings_global,
                 position_embeddings_local=position_embeddings_local,
-                per_layer_input_embedding=layer_input_embed,
+                per_layer_input=layer_input_embed,
                 past_key_value=past_key_value,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
