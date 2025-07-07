@@ -123,8 +123,6 @@ class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
         # Use the correct config type for parent
         text_config = config.text_config if hasattr(config, 'text_config') else config
         super().__init__(text_config, layer_idx)
-        # Manually initialize use_altup, as it's part of the parent class logic
-        self.use_altup = getattr(text_config, "use_altup", True)
         # Replace self_attn with KBLaM version
         self.self_attn = KblamGemma3nAttention(config, layer_idx)
         # Save config for forward
@@ -142,18 +140,9 @@ class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
         if inject_kb:
             kwargs['kb_embeds'] = kb_embeds
 
-        # Temporarily disable altup for 3D inputs to support text-only training
-        # while preserving multi-modal capabilities for 4D inputs at inference.
-        original_use_altup = self.use_altup
-        if hidden_states.dim() == 3:
-            self.use_altup = False
-
-        output = super().forward(hidden_states, *args, **kwargs)
-
-        # Restore original altup setting
-        self.use_altup = original_use_altup
-
-        return output
+        # The base class forward will be called from KblamGemma3nForConditionalGeneration,
+        # which will handle the `use_altup` flag.
+        return super().forward(hidden_states, *args, **kwargs)
 
 
 class KblamGemma3nTextModel(Gemma3nTextModel):
@@ -202,8 +191,9 @@ class KblamGemma3nTextModel(Gemma3nTextModel):
         ])
         self.norm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
 
-    def forward(self, input_ids=None, attention_mask=None, position_ids=None, past_key_values=None, inputs_embeds=None, kb_embeds=None, use_cache=None, output_attentions=None, output_hidden_states=None, return_dict=None, **kwargs):
+    def forward(self, input_ids=None, attention_mask=None, position_ids=None, past_key_values=None, inputs_embeds=None, use_cache=None, output_attentions=None, output_hidden_states=None, return_dict=None, use_altup=None, **kwargs):
         # This forward pass is now simplified as the main logic is in KblamGemma3nForConditionalGeneration
+        # We explicitly pass use_altup to the parent.
         return super().forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -214,7 +204,8 @@ class KblamGemma3nTextModel(Gemma3nTextModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
-            # kb_embeds is passed up to the layer that needs it
+            use_altup=use_altup,
+            # kb_embeds is passed up to the layer that needs it via kwargs
             **kwargs
         )
 
@@ -319,6 +310,12 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
         use_cache = use_cache if use_cache is not None else getattr(self.config, 'use_cache', False)
         return_dict = return_dict if return_dict is not None else getattr(self.config, 'use_return_dict', True)
 
+        # Determine if altup should be used based on input dimensions.
+        # 3D input is text-only, 4D is multi-modal.
+        use_altup_flag = None
+        if inputs_embeds is not None and inputs_embeds.dim() == 3:
+            use_altup_flag = False
+
         # The core logic from the original `Gemma3nTextModel.forward` is replicated here
         # to allow for manual layer-by-layer processing with KB injection.
         if inputs_embeds is None:
@@ -334,72 +331,25 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
                 device=inputs_embeds.device
             ).unsqueeze(0)
 
-        hidden_states = inputs_embeds
-        
-        # Get KB configuration
-        kb_layer_frequency = getattr(self.config, 'kb_layer_frequency', 1)
-        if kb_config is not None:
-            # Accept both dict and config object for kb_config
-            if isinstance(kb_config, dict):
-                kb_layer_frequency = kb_config.get('kb_layer_frequency', kb_layer_frequency)
-            else:
-                kb_layer_frequency = getattr(kb_config, 'kb_layer_frequency', kb_layer_frequency)
-
-        # Prepare for decoder layers
-        all_hidden_states = () if output_hidden_states else None
-        all_self_attns = () if output_attentions else None
-        next_decoder_cache = () if use_cache else None
-
-        # Manually iterate through each decoder layer
-        for idx, decoder_layer in enumerate(self.model.layers):
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-
-            # Determine if KB should be injected at this layer
-            inject_kb = (idx + 1) % kb_layer_frequency == 0
-            kb_embeds_for_layer = None
-            if inject_kb and kb_kvs is not None:
-                # Unpack the tuple of (keys, values)
-                kb_keys, kb_values = kb_kvs
-                # For now, we pass the keys. This might need adjustment based on fusion strategy.
-                kb_embeds_for_layer = kb_keys
-
-            past_key_value = past_key_values[idx] if past_key_values is not None else None
-
-            # The following arguments are required by the Gemma3nTextDecoderLayer.forward method.
-            # We must construct them manually.
-            layer_input_embed = self.model.per_layer_input_embeddings(torch.tensor(idx, device=hidden_states.device))
-            
-            # Generate RoPE embeddings for the current hidden states
-            position_embeddings_global = self.model.rotary_emb(hidden_states, position_ids)
-            position_embeddings_local = self.model.rotary_emb_local(hidden_states, position_ids)
-
-            layer_outputs = decoder_layer(
-                hidden_states,
-                attention_mask=attention_mask,
-                position_embeddings_global=position_embeddings_global,
-                position_embeddings_local=position_embeddings_local,
-                per_layer_input=layer_input_embed,
-                past_key_value=past_key_value,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-                kb_embeds=kb_embeds_for_layer, # Pass KB embeds to the layer
-            )
-
-            hidden_states = layer_outputs[0]
-
-            if use_cache:
-                next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
-
-            if output_attentions:
-                all_self_attns += (layer_outputs[1],)
-
-        hidden_states = self.model.norm(hidden_states)
-
-        if output_hidden_states:
-            all_hidden_states += (hidden_states,)
-
-        next_cache = next_decoder_cache if use_cache else None
+        # We now call the model directly and pass the use_altup flag.
+        # The manual layer loop is removed to ensure proper subclass behavior.
+        transformer_outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            use_altup=use_altup_flag,
+            # Pass kb_kvs and kb_config through kwargs for the layers to use
+            kb_kvs=kb_kvs,
+            kb_config=kb_config,
+        )
+        hidden_states = transformer_outputs[0]
+        next_cache = transformer_outputs[1] if use_cache else None
 
         # Compute final logits
         logits = self.lm_head(hidden_states)
@@ -418,14 +368,14 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
             loss = loss_fct(shift_logits, shift_labels)
 
         if not return_dict:
-            return tuple(v for v in [logits, next_cache, all_hidden_states, all_self_attns] if v is not None)
+            return tuple(v for v in [logits, next_cache, transformer_outputs.hidden_states, transformer_outputs.attentions] if v is not None)
 
         return CausalLMOutputWithPast(
             loss=loss,
             logits=logits,
             past_key_values=next_cache,
-            hidden_states=all_hidden_states,
-            attentions=all_self_attns,
+            hidden_states=transformer_outputs.hidden_states,
+            attentions=transformer_outputs.attentions,
         )
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None, **kwargs):
