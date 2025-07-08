@@ -130,30 +130,6 @@ class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
         super().__init__(text_config, layer_idx)
         # Replace self_attn with KBLaM version
         self.self_attn = KblamGemma3nAttention(config, layer_idx)
-        # Save config for forward
-        self.kb_layer_frequency = getattr(text_config, 'kb_layer_frequency', 1)
-        self.kb_layers = set(getattr(text_config, 'kb_layers', []))
-        self.layer_idx = layer_idx
-
-    def forward(self, hidden_states, *args, **kwargs):
-        # Check for KB data in kwargs and pass to attention if this layer is selected
-        kb_kvs = kwargs.get("kb_kvs")
-
-        inject_kb = False
-        if len(self.kb_layers) > 0:
-            inject_kb = self.layer_idx in self.kb_layers
-        else:
-            # Corrected logic to match original implementation's 1-based layer check
-            inject_kb = (self.layer_idx + 1) % self.kb_layer_frequency == 0
-
-        if inject_kb and kb_kvs is not None:
-            # The attention layer expects `kb_embeds`. We derive it from `kb_kvs`.
-            # The original logic used the first element (keys).
-            kwargs["kb_embeds"] = kb_kvs[0]
-
-        # The base class forward will be called from KblamGemma3nForConditionalGeneration,
-        # which will handle the `use_altup` flag.
-        return super().forward(hidden_states, *args, **kwargs)
 
 
 class KblamGemma3nTextModel(Gemma3nTextModel):
@@ -176,11 +152,9 @@ class KblamGemma3nTextModel(Gemma3nTextModel):
             self.vocab_size = config.vocab_size
             self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
 
-        # Do not overwrite self.config; the parent class sets it correctly.
-        # self.config = config
-
-        # KBLaM-specific attributes
+        # KBLaM-specific attributes, to be used in the forward pass
         self.kb_layer_frequency = getattr(config, 'kb_layer_frequency', 1)
+        self.kb_layers = set(getattr(config, 'kb_layers', []))
 
         # The following logic is adapted from the original Gemma3nTextModel.__init__
         # to ensure all necessary attributes are correctly initialized on this subclass.
@@ -205,21 +179,142 @@ class KblamGemma3nTextModel(Gemma3nTextModel):
         self.norm = Gemma3nRMSNorm(text_config.hidden_size, eps=text_config.rms_norm_eps)
 
     def forward(self, input_ids=None, attention_mask=None, position_ids=None, past_key_values=None, inputs_embeds=None, use_cache=None, output_attentions=None, output_hidden_states=None, return_dict=None, use_altup=None, **kwargs):
-        # This forward pass is now simplified as the main logic is in KblamGemma3nForConditionalGeneration
-        # We explicitly pass use_altup to the parent.
-        return super().forward(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-            use_altup=use_altup,
-            # kb_embeds is passed up to the layer that needs it via kwargs
-            **kwargs
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+        elif inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
+        if position_ids is None:
+            past_seen_tokens = 0
+            if past_key_values is not None:
+                past_seen_tokens = past_key_values[0][0].shape[2]
+            position_ids = torch.arange(
+                past_seen_tokens,
+                past_seen_tokens + inputs_embeds.shape[1],
+                device=inputs_embeds.device
+            ).unsqueeze(0)
+
+        if self.gradient_checkpointing and self.training:
+            if use_cache:
+                logger.warning_once(
+                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                )
+                use_cache = False
+        
+        hidden_states = inputs_embeds
+        
+        # The per_layer_input_embeddings are now calculated and passed inside the loop.
+
+        # decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+        next_decoder_cache = () if use_cache else None
+
+        kb_kvs = kwargs.get("kb_kvs", None)
+        kb_slice_idx = 0
+
+        for idx, decoder_layer in enumerate(self.layers):
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
+            past_key_value = past_key_values[idx] if past_key_values is not None else None
+            
+            # Per-layer input embedding for this specific layer
+            per_layer_input = self.per_layer_input_embeddings(
+                torch.tensor(idx, device=hidden_states.device)
+            ).unsqueeze(0).unsqueeze(0)
+
+            # Determine position embeddings for the layer
+            position_embeddings_global = self.rotary_emb(hidden_states, position_ids=position_ids)
+            if use_altup:
+                position_embeddings_local = self.rotary_emb_local(hidden_states, position_ids=position_ids)
+            else:
+                # If not using altup, local is the same as global, as per reference implementation
+                position_embeddings_local = position_embeddings_global
+
+            # Determine if KB should be injected
+            inject_kb = False
+            if len(self.kb_layers) > 0:
+                inject_kb = idx in self.kb_layers
+            else:
+                inject_kb = (idx + 1) % self.kb_layer_frequency == 0
+
+            layer_kwargs = {}
+            if inject_kb and kb_kvs is not None:
+                # Slice the KB embeddings for this layer.
+                # self.config is the text_config, which has the correct kb_embed_dim.
+                slice_dim = self.config.kb_embed_dim
+                start_idx = kb_slice_idx * slice_dim
+                end_idx = start_idx + slice_dim
+                
+                if end_idx > kb_kvs[0].shape[1]:
+                    raise ValueError(
+                        f"KB embedding dimension mismatch. Tried to slice from {start_idx} to {end_idx} "
+                        f"but tensor width is {kb_kvs[0].shape[1]}. Check that the total KB embedding "
+                        f"dimension is divisible by the number of KB-injected layers."
+                    )
+
+                layer_kwargs["kb_embeds"] = kb_kvs[0][:, start_idx:end_idx]
+                kb_slice_idx += 1
+
+            if self.gradient_checkpointing and self.training:
+                layer_outputs = self._gradient_checkpointing_func(
+                    decoder_layer.__call__,
+                    hidden_states,
+                    per_layer_input,
+                    position_embeddings_global,
+                    position_embeddings_local,
+                    attention_mask,
+                    past_key_value,
+                    output_attentions,
+                    use_cache,
+                    use_altup,
+                    **layer_kwargs,
+                )
+            else:
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    per_layer_input,
+                    position_embeddings_global,
+                    position_embeddings_local,
+                    attention_mask,
+                    past_key_value,
+                    output_attentions,
+                    use_cache,
+                    use_altup,
+                    **layer_kwargs,
+                )
+
+            hidden_states = layer_outputs[0]
+
+            if use_cache:
+                next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
+        hidden_states = self.norm(hidden_states)
+
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        next_cache = next_decoder_cache if use_cache else None
+
+        if not return_dict:
+            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
+        
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=next_cache,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
         )
 
 
@@ -336,27 +431,10 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
         if inputs_embeds is not None and inputs_embeds.dim() == 3:
             use_altup_flag = False
 
-        # The core logic from the original `Gemma3nTextModel.forward` is replicated here
-        # to allow for manual layer-by-layer processing with KB injection.
-        if input_ids is not None and inputs_embeds is not None:
-            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
-        elif inputs_embeds is None:
-            inputs_embeds = self.model.embed_tokens(input_ids)
-
-        if position_ids is None:
-            past_seen_tokens = 0
-            if past_key_values is not None:
-                past_seen_tokens = past_key_values[0][0].shape[2]
-            position_ids = torch.arange(
-                past_seen_tokens,
-                past_seen_tokens + inputs_embeds.shape[1],
-                device=inputs_embeds.device
-            ).unsqueeze(0)
-
-        # We now call the model directly and pass the use_altup flag.
-        # The manual layer loop is removed to ensure proper subclass behavior.
+        # The core logic is now correctly handled in KblamGemma3nTextModel.forward,
+        # which performs the layer-by-layer processing and KB injection.
         transformer_outputs = self.model(
-            input_ids=None,  # We pass embeds, so ids should be None
+            input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
@@ -366,7 +444,7 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             use_altup=use_altup_flag,
-            # Pass kb_kvs and kb_config through kwargs for the layers to use
+            # Pass kb_kvs and kb_config through kwargs for the model to use
             kb_kvs=kb_kvs,
             kb_config=kb_config,
         )

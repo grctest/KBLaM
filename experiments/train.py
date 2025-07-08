@@ -228,7 +228,9 @@ def main():
             base_config.kb_layer_frequency = kb_token_layer_frequency
             base_config.kb_length_scaling = length_invariance
             base_config.kb_max_train_triples = N
-            base_config.kb_embed_dim = encoder.get_input_dim()
+            # THIS IS THE CRITICAL CONFIGURATION FIX:
+            # The kb_embed_dim for each layer corresponds to the model's main hidden_size.
+            base_config.kb_embed_dim = hidden_size
             
             # The modified base_config is now the kb_config
             kb_config = base_config
