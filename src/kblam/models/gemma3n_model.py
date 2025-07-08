@@ -63,12 +63,17 @@ class KblamGemma3nAttention(Gemma3nTextAttention):
         assert hasattr(text_config, "num_attention_heads"), f"Config missing num_attention_heads: {text_config}"
         assert hasattr(text_config, "head_dim"), f"Config missing head_dim: {text_config}"
         super().__init__(text_config, layer_idx)
+
+        # The input dimension for the KB projection should match the KB embeddings,
+        # which is defined in the top-level KBLaMConfig, not the text_config.
+        kb_embed_dim = getattr(config, "kb_embed_dim", text_config.hidden_size)
+
         # KBLaM extension: add KB projection for concat+proj fusion
-        self.kb_proj = nn.Linear(text_config.hidden_size, text_config.head_dim, bias=False)
+        self.kb_proj = nn.Linear(kb_embed_dim, text_config.head_dim, bias=False)
         # Optional: separable query head
         self.separable_query = getattr(text_config, 'kblam_separable_query', False)
         if self.separable_query:
-            self.kb_query_proj = nn.Linear(text_config.hidden_size, text_config.head_dim, bias=False)
+            self.kb_query_proj = nn.Linear(kb_embed_dim, text_config.head_dim, bias=False)
         # Optional: length scaling
         self.length_scaling = getattr(text_config, 'kblam_length_scaling', False)
         self.kb_layer_frequency = getattr(text_config, 'kb_layer_frequency', 1)
@@ -82,7 +87,7 @@ class KblamGemma3nAttention(Gemma3nTextAttention):
         if len(self.kb_layers) > 0:
             inject_kb = self.layer_idx in self.kb_layers
         else:
-            inject_kb = (self.layer_idx % self.kb_layer_frequency == 0)
+            inject_kb = (self.layer_idx + 1) % self.kb_layer_frequency == 0
 
         # Optionally, fuse KB embeddings as extra keys/values if provided and enabled
         if kb_embeds is not None and inject_kb:
@@ -130,15 +135,21 @@ class KblamGemma3nDecoderLayer(Gemma3nTextDecoderLayer):
         self.kb_layers = set(getattr(text_config, 'kb_layers', []))
         self.layer_idx = layer_idx
 
-    def forward(self, hidden_states, *args, kb_embeds=None, **kwargs):
-        # Pass kb_embeds to attention if this layer is selected for KB fusion
+    def forward(self, hidden_states, *args, **kwargs):
+        # Check for KB data in kwargs and pass to attention if this layer is selected
+        kb_kvs = kwargs.get("kb_kvs")
+
         inject_kb = False
         if len(self.kb_layers) > 0:
             inject_kb = self.layer_idx in self.kb_layers
         else:
-            inject_kb = (self.layer_idx % self.kb_layer_frequency == 0)
-        if inject_kb:
-            kwargs['kb_embeds'] = kb_embeds
+            # Corrected logic to match original implementation's 1-based layer check
+            inject_kb = (self.layer_idx + 1) % self.kb_layer_frequency == 0
+
+        if inject_kb and kb_kvs is not None:
+            # The attention layer expects `kb_embeds`. We derive it from `kb_kvs`.
+            # The original logic used the first element (keys).
+            kwargs["kb_embeds"] = kb_kvs[0]
 
         # The base class forward will be called from KblamGemma3nForConditionalGeneration,
         # which will handle the `use_altup` flag.
@@ -165,7 +176,8 @@ class KblamGemma3nTextModel(Gemma3nTextModel):
             self.vocab_size = config.vocab_size
             self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
 
-        self.config = config
+        # Do not overwrite self.config; the parent class sets it correctly.
+        # self.config = config
 
         # KBLaM-specific attributes
         self.kb_layer_frequency = getattr(config, 'kb_layer_frequency', 1)
@@ -185,7 +197,8 @@ class KblamGemma3nTextModel(Gemma3nTextModel):
 
         self.per_layer_input_embeddings = nn.Embedding(text_config.num_hidden_layers, text_config.hidden_size)
         
-        # Replace layers with KBLaM versions
+        # Replace layers with KBLaM versions, passing the top-level config
+        # so that the attention layer can access kb_embed_dim.
         self.layers = nn.ModuleList([
             KblamGemma3nDecoderLayer(config, i) for i in range(text_config.num_hidden_layers)
         ])
@@ -219,9 +232,16 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
     """
     def __init__(self, config: KBLaMConfig):
         super().__init__(config)
-        self.config = config
+
+        # To ensure the correct kb_embed_dim is always available, we explicitly
+        # add it to the text_config before initializing the model.
+        if hasattr(config, "text_config") and hasattr(config, "kb_embed_dim"):
+            config.text_config.kb_embed_dim = config.kb_embed_dim
+
         self.model = KblamGemma3nTextModel(config)
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
+        # Make vocab_size accessible from the top-level config for trainer compatibility
+        self.config.vocab_size = config.text_config.vocab_size
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -318,7 +338,9 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
 
         # The core logic from the original `Gemma3nTextModel.forward` is replicated here
         # to allow for manual layer-by-layer processing with KB injection.
-        if inputs_embeds is None:
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+        elif inputs_embeds is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
 
         if position_ids is None:
@@ -334,7 +356,7 @@ class KblamGemma3nForConditionalGeneration(Gemma3nPreTrainedModel, GenerationMix
         # We now call the model directly and pass the use_altup flag.
         # The manual layer loop is removed to ensure proper subclass behavior.
         transformer_outputs = self.model(
-            input_ids=input_ids,
+            input_ids=None,  # We pass embeds, so ids should be None
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,

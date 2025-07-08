@@ -9,7 +9,7 @@ import wandb
 from accelerate import Accelerator
 from rich.logging import RichHandler
 
-from transformers import AutoTokenizer, Gemma3nConfig
+from transformers import AutoTokenizer, Gemma3nConfig, AutoConfig
 
 from kblam.kb_encoder import KBEncoder
 from kblam.models.kblam_config import KBLaMConfig
@@ -186,39 +186,80 @@ def main():
     )
     tokenizer.pad_token = tokenizer.eos_token
 
-    if args.llm_type == "llama3":
-        model = KblamLlamaForCausalLM.from_pretrained(
-            llm_model_spec,
-            device_map=device,
-            torch_dtype=torch.bfloat16,
-            trust_remote_code=True,
-            #token=hf_token,
-        )
-    elif args.llm_type == "phi3":
-        model = KBLaMPhi3ForCausalLM.from_pretrained(
-            llm_model_spec,
-            device_map=device,
-            torch_dtype="auto",
-            trust_remote_code=True,
-        )
-    elif args.llm_type == "bitnet":
-        model = KBLaMBitNetForCausalLM.from_pretrained(
-            llm_model_spec,
-            device_map=device,
-            torch_dtype=torch.bfloat16, # BitNet uses bfloat16
-            trust_remote_code=True,
-        )
-    elif args.llm_type == "gemma3n":
-        model = KblamGemma3nForConditionalGeneration.from_pretrained(
-            llm_model_spec,
-            device_map=device,
-            torch_dtype=torch.bfloat16,
-            trust_remote_code=True,
-        )
-        # Freeze only the backbone, leave KBLaM modules trainable
-        model.freeze_backbone()
+    # === Consolidated and Corrected Initialization Logic ===
+
+    # 1. Get model dimensions from the correct config first
+    if llm_type == "gemma3n":
+        # For gemma3n, the text_config is nested
+        model_config = Gemma3nConfig.from_pretrained(hf_model_spec)
+        hidden_size = model_config.text_config.hidden_size
+        num_hidden_layers = model_config.text_config.num_hidden_layers
     else:
-        raise ValueError(f"LLM type {args.llm_type} not recognised")
+        # For all other models, load the standard config
+        model_config = AutoConfig.from_pretrained(hf_model_spec, trust_remote_code=True)
+        hidden_size = model_config.hidden_size
+        num_hidden_layers = model_config.num_hidden_layers
+
+    # 2. Initialize the KBEncoder with the correct dimensions
+    encoder = KBEncoder(
+        encoder_name=encoder_spec,
+        projector_type="linear",
+        endpoint_url="",
+        out_dim=hidden_size * (num_hidden_layers // kb_token_layer_frequency + 1),
+        frozen_base_model=False,
+        device=device,
+    )
+
+    # 3. Create the appropriate model and its config
+    if not model_dir_to_resume:
+        if args.llm_type == "llama3":
+            kb_config = KBLaMConfig(sep_query_head=sep_query_head, kb_layer_frequency=kb_token_layer_frequency, kb_length_scaling=length_invariance, kb_max_train_triples=N)
+            model = KblamLlamaForCausalLM.from_pretrained(llm_model_spec, device_map=device, torch_dtype=torch.bfloat16, trust_remote_code=True)
+        elif args.llm_type == "phi3":
+            kb_config = KBLaMConfig(sep_query_head=sep_query_head, kb_layer_frequency=kb_token_layer_frequency, kb_length_scaling=length_invariance, kb_max_train_triples=N)
+            model = KBLaMPhi3ForCausalLM.from_pretrained(llm_model_spec, device_map=device, torch_dtype="auto", trust_remote_code=True)
+        elif args.llm_type == "bitnet":
+            kb_config = KBLaMConfig(sep_query_head=sep_query_head, kb_layer_frequency=kb_token_layer_frequency, kb_length_scaling=length_invariance, kb_max_train_triples=N)
+            model = KBLaMBitNetForCausalLM.from_pretrained(llm_model_spec, device_map=device, torch_dtype=torch.bfloat16, trust_remote_code=True)
+        elif args.llm_type == "gemma3n":
+            # Start with the base config and add our custom attributes
+            base_config = Gemma3nConfig.from_pretrained(hf_model_spec)
+            base_config.sep_query_head = sep_query_head
+            base_config.kb_layer_frequency = kb_token_layer_frequency
+            base_config.kb_length_scaling = length_invariance
+            base_config.kb_max_train_triples = N
+            base_config.kb_embed_dim = encoder.get_input_dim()
+            
+            # The modified base_config is now the kb_config
+            kb_config = base_config
+            
+            model = KblamGemma3nForConditionalGeneration.from_pretrained(
+                llm_model_spec,
+                config=kb_config,  # Pass the fully prepared config
+                device_map=device,
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+            )
+            model.freeze_backbone()
+        else:
+            raise ValueError(f"LLM type {args.llm_type} not recognised")
+    else:
+        # Resuming from a checkpoint
+        encoder_dir = model_dir_to_resume + "_encoder"
+        encoder.load_state_dict(torch.load(os.path.join(encoder_dir, "encoder.pt")))
+        kb_config = AutoConfig.from_pretrained(model_dir_to_resume, trust_remote_code=True)
+        if args.llm_type == "llama3":
+            model = KblamLlamaForCausalLM.from_pretrained(model_dir_to_resume, device_map=device, torch_dtype=torch.bfloat16, trust_remote_code=True)
+        elif args.llm_type == "phi3":
+            model = KBLaMPhi3ForCausalLM.from_pretrained(model_dir_to_resume, device_map=device, torch_dtype="auto", trust_remote_code=True)
+        elif args.llm_type == "bitnet":
+            model = KBLaMBitNetForCausalLM.from_pretrained(model_dir_to_resume, device_map=device, torch_dtype=torch.bfloat16, trust_remote_code=True)
+        elif args.llm_type == "gemma3n":
+            model = KblamGemma3nForConditionalGeneration.from_pretrained(model_dir_to_resume, device_map=device, torch_dtype=torch.bfloat16, trust_remote_code=True)
+            model.freeze_backbone()
+        else:
+            raise ValueError(f"LLM type {args.llm_type} not recognised")
+
 
     logger.info(model.config)  # type: ignore
 
@@ -233,57 +274,6 @@ def main():
     if hasattr(model, "unfreeze_all"):
         model.unfreeze_all()
 
-
-    # Set up the encoder
-    if llm_type == "gemma3n":
-        hidden_size = model.config.text_config.hidden_size
-        num_hidden_layers = model.config.text_config.num_hidden_layers
-    else:
-        hidden_size = model.config.hidden_size
-        num_hidden_layers = model.config.num_hidden_layers
-
-
-    encoder = KBEncoder(
-        encoder_name=encoder_spec,
-        projector_type="linear",
-        endpoint_url="",
-        out_dim=hidden_size * (num_hidden_layers // kb_token_layer_frequency + 1),  # type: ignore
-        frozen_base_model=False,  # Ensure encoder is always trainable
-        device=device,
-    )
-
-    if model_dir_to_resume:
-        encoder_dir = model_dir_to_resume + "_encoder"
-        encoder.load_state_dict(torch.load(os.path.join(encoder_dir, "encoder.pt")))
-        if args.llm_type == "bitnet":
-            config_path = os.path.join(model_dir_to_resume, "kb_config_explicit.json")
-            kb_config = KBLaMConfig.from_pretrained(config_path)
-        else:
-            # For llama3 and gemma3n, the full config is saved with the model
-            kb_config = KBLaMConfig.from_pretrained(model_dir_to_resume)
-
-    else:
-        if args.llm_type == "gemma3n":
-            # For gemma3n, load the base config and create a KBLaMConfig from it
-            base_config = Gemma3nConfig.from_pretrained(hf_model_spec)
-            kblam_dict = base_config.to_dict()
-            # Add KBLaM specific attributes
-            kblam_dict.update({
-                "sep_query_head": sep_query_head,
-                "kb_layer_frequency": kb_token_layer_frequency,
-                "kb_length_scaling": length_invariance,
-                "kb_max_train_triples": N,
-            })
-            kb_config = KBLaMConfig(**kblam_dict)
-        else:
-            # For other models, create a standard KBLaMConfig
-            kb_config = KBLaMConfig(
-                sep_query_head=sep_query_head,
-                kb_layer_frequency=kb_token_layer_frequency,
-                kb_length_scaling=length_invariance,
-                kb_max_train_triples=N,
-            )
-
     encoder.train()
 
     kbretriever = KBRetriever(
@@ -292,8 +282,6 @@ def main():
         key_embds=key_embds,  # type: ignore
         value_embds=value_embds,  # type: ignore
     )
-
-
 
     logger.info("Model ready")
 
