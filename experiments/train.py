@@ -222,27 +222,21 @@ def main():
             kb_config = KBLaMConfig(sep_query_head=sep_query_head, kb_layer_frequency=kb_token_layer_frequency, kb_length_scaling=length_invariance, kb_max_train_triples=N)
             model = KBLaMBitNetForCausalLM.from_pretrained(llm_model_spec, device_map=device, torch_dtype=torch.bfloat16, trust_remote_code=True)
         elif args.llm_type == "gemma3n":
-            # Start with the base config and add our custom attributes
-            base_config = Gemma3nConfig.from_pretrained(hf_model_spec)
-            base_config.sep_query_head = sep_query_head
-            base_config.kb_layer_frequency = kb_token_layer_frequency
-            base_config.kb_length_scaling = length_invariance
-            base_config.kb_max_train_triples = N
-            # THIS IS THE CRITICAL CONFIGURATION FIX:
-            # The kb_embed_dim for each layer corresponds to the model's main hidden_size.
-            base_config.kb_embed_dim = hidden_size
-            
-            # The modified base_config is now the kb_config
-            kb_config = base_config
-            
-            model = KblamGemma3nForConditionalGeneration.from_pretrained(
-                llm_model_spec,
-                config=kb_config,  # Pass the fully prepared config
-                device_map=device,
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
+            # The new model architecture uses the standard KBLaMConfig,
+            # simplifying initialization and aligning it with other models.
+            kb_config = KBLaMConfig(
+                base_model_name_or_path=hf_model_spec,
+                sep_query_head=sep_query_head, 
+                kb_layer_frequency=kb_token_layer_frequency, 
+                kb_length_scaling=length_invariance, 
+                kb_max_train_triples=N,
+                torch_dtype=torch.bfloat16
             )
-            model.freeze_backbone()
+            
+            model = KblamGemma3nForConditionalGeneration(kb_config)
+            model.to(device) # Ensure model is on the correct device
+            # Freezing is now handled inside the model's post_init or can be done here if needed.
+            # model.freeze_backbone() # This method may need to be implemented in the new model if required.
         else:
             raise ValueError(f"LLM type {args.llm_type} not recognised")
     else:
