@@ -125,7 +125,14 @@ def answer_question(
         kb_config.top_k_kb = topk_size
 
     with torch.autograd.no_grad():
-        # All models now support the custom KB arguments, so we can unify the generate call.
+        # Set pad_token_id logic for each model type
+        if isinstance(model, (KblamLlamaForCausalLM, KBLaMPhi3ForCausalLM, KBLaMBitNetForCausalLM)):
+            pad_token_id = tokenizer.eos_token_id
+        elif isinstance(model, KblamGemma3nForConditionalGeneration):
+            pad_token_id = tokenizer.pad_token_id
+        else:
+            pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+
         generate_kwargs = {
             "input_ids": input_ids,
             "attention_mask": attention_masks,
@@ -134,7 +141,7 @@ def answer_question(
             "tokenizer": tokenizer,
             "output_attentions": True,
             "kb_config": kb_config,
-            "pad_token_id": tokenizer.eos_token_id,
+            "pad_token_id": pad_token_id,
             "save_attention_weights": save_attention_weights,
             "attention_file_base_name": attention_file_base_name,
             "attention_save_loc": attention_save_loc,
@@ -144,7 +151,6 @@ def answer_question(
         import inspect
         sig = inspect.signature(model.generate)
         filtered_kwargs = {k: v for k, v in generate_kwargs.items() if k in sig.parameters}
-        
         outputs = model.generate(**filtered_kwargs).squeeze()
     outputs = tokenizer.decode(outputs, skip_special_tokens=False)
 

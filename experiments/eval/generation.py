@@ -7,12 +7,14 @@ import transformers
 import evaluate
 from tqdm import tqdm
 from pathlib import Path
+from transformers import AutoProcessor, AutoTokenizer
 
 from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.models.gemma3n_model import KblamGemma3nForConditionalGeneration
 from kblam.models.gemma3n_config import Gemma3nConfig
+from kblam.models.bitnet_model import KBLaMBitNetForCausalLM
 from kblam.utils.data_utils import generate_multi_entity_qa
 from kblam.utils.eval_utils import (
     instruction_prompts,
@@ -40,6 +42,7 @@ def perform_eval(
     topk_size: int = -1,
     multi_entites: int = -1,
     remove_sorry: bool = False,
+    fancy_format: bool = False,
 ):
     """Performs evaluation of the model's generation capabilities.
 
@@ -87,6 +90,12 @@ def perform_eval(
         400, len(test_kb)
     )  # Regardless of KB size, always test 250 questions, otherwise it will be too slow
     # subset_size = 50
+
+    from .utils import format_question, postprocess_output, get_topk_confidence
+
+    topk_confidences = []
+    attn_save_dir = None
+    all_attn_weights = []
     for row in tqdm(test_kb[:subset_size]):
         if multi_entites == -1:
             Q = row["Q"]
@@ -100,22 +109,31 @@ def perform_eval(
             )
             answer = A
 
-        prompt_to_split = Q
+        Q_fmt = format_question(Q, fancy_format)
+        prompt_to_split = Q_fmt
         if eval_mode == "kb":
-            raw_output = answer_question(
+            # Optionally collect attention weights if answer_question supports it
+            result = answer_question(
                 tokenizer,
                 model,
-                Q,
+                Q_fmt,
                 kb=kb_embedding,
                 topk_size=topk_size,
                 kb_config=kb_config,
+                output_attentions=True if attn_save_dir else False,
             )
+            if isinstance(result, tuple) and len(result) == 2:
+                raw_output, attn_weights = result
+                if attn_save_dir:
+                    all_attn_weights.append(attn_weights)
+            else:
+                raw_output = result
         elif eval_mode == "icl":
             if multi_entites != -1:
                 ins_prompt = instruction_prompts_multi_entities
             else:
                 ins_prompt = instruction_prompts
-            prompt_to_split = ins_prompt + prompt_strs + Q
+            prompt_to_split = ins_prompt + prompt_strs + Q_fmt
             raw_output = answer_question(
                 tokenizer,
                 model,
@@ -128,13 +146,20 @@ def perform_eval(
                 ins_prompt = zero_shot_prompt_multi_entities
             else:
                 ins_prompt = zero_shot_prompt
-            prompt_to_split = ins_prompt + Q
+            prompt_to_split = ins_prompt + Q_fmt
             raw_output = answer_question(
                 tokenizer, model, prompt_to_split, kb=None, kb_config=kb_config
             )
-        
+
         output_parts = raw_output.split(prompt_to_split)
         model_output = output_parts[1] if len(output_parts) > 1 else raw_output
+        # Post-process output (strip pad/eos tokens, etc.)
+        model_output = postprocess_output(model_output, pad_token=getattr(tokenizer, 'pad_token', None))
+
+        # Optionally collect top-k/confidence (if logits available from answer_question)
+        # Example: if answer_question returns (output, logits), unpack and use get_topk_confidence
+        # logits = ...
+        # topk_confidences.append(get_topk_confidence(logits, tokenizer, k=5))
 
         # print(model_output)
         if remove_sorry:
@@ -153,6 +178,15 @@ def perform_eval(
             model_output = "; ".join(matches)
             answers.append(";".join(re.findall(r"(?:is|are) (.*?);", answer)))
         model_outputs.append(model_output)
+
+
+    # Save attention weights if requested
+    if attn_save_dir is not None and attn_save_dir != "" and all_attn_weights:
+        attn_save_path = Path(attn_save_dir)
+        attn_save_path.mkdir(exist_ok=True, parents=True)
+        attn_file = attn_save_path / "attn_weights.npy"
+        np.save(attn_file, np.array(all_attn_weights, dtype=object))
+        print(f"Attention weights saved to: {attn_file}")
 
     print(f"KB size: {kb_size}, mode: {eval_mode}")
     rouge = evaluate.load("rouge")
@@ -196,60 +230,119 @@ def eval_generate(args):
     Args:
         args: Command-line arguments parsed by argparse.
     """
+    # --- Argument & Path Setup ---
     dataset_dir = args.dataset_dir
     encoder_model_spec = args.encoder_spec
-    encoder_path = args.encoder_dir
     eval_mode = args.eval_mode
     exp_config = args.exp_config_name
-    kb_layer_frequency = args.kb_layer_frequency
-    kb_scale_factor = args.kb_scale_factor
     kb_size = args.kb_size
     llm_base_dir = args.llm_base_dir
     llm_type = args.llm_type
     model_path = args.model_dir
     seed = args.seed
     test_dataset = args.test_dataset
-    query_head_path = args.query_head_path
     precomputed_embed_keys_path = args.precomputed_embed_keys_path
     precomputed_embed_values_path = args.precomputed_embed_values_path
 
     dataset = json.load(open(os.path.join(dataset_dir, test_dataset)))
 
-    tokenizer, encoder, model, kb_config = _prepare_models(
-        encoder_model_spec,
-        encoder_path,
-        llm_type,
-        llm_base_dir,
-        model_path,
-        query_head_path,
-        kb_layer_frequency,
-        kb_scale_factor,
+
+    # --- Tokenizer Loading (Best Practice) ---
+    # For consistency and to prevent mismatches, always load the tokenizer from the base model directory.
+    # No new tokens are added during KBLaM fine-tuning, so the base tokenizer is the source of truth.
+    if not llm_base_dir:
+        raise ValueError("A --llm_base_dir must be provided to load the correct base tokenizer.")
+    tokenizer = AutoTokenizer.from_pretrained(llm_base_dir, trust_remote_code=True)
+    # Set left padding for decoder-only models (important for correct generation)
+    tokenizer.padding_side = "left"
+    # Try to use '^' as pad token, fallback to eos_token if not in vocab
+    try:
+        tokenizer.pad_token = "^"
+        # If '^' is not in vocab, this will raise an error on encode
+        _ = tokenizer.encode("^")
+    except Exception:
+        print("Warning: '^' not in tokenizer vocab, falling back to eos_token as pad_token.")
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # --- Model Loading ---
+    # A mapping of llm_type to the corresponding model class.
+    MODEL_CLASS_MAP = {
+        "llama": KblamLlamaForCausalLM,
+        "phi": KBLaMPhi3ForCausalLM,
+        "bitnet": KBLaMBitNetForCausalLM,
+        "gemma3n": KblamGemma3nForConditionalGeneration,
+    }
+
+    model_class = MODEL_CLASS_MAP.get(llm_type)
+    if model_class is None:
+        raise ValueError(f"Unsupported llm_type: '{llm_type}'. Supported types are: {list(MODEL_CLASS_MAP.keys())}")
+
+    print(f"Loading fine-tuned '{llm_type}' model from: {model_path}")
+    model = model_class.from_pretrained(
+        model_path, torch_dtype=torch.bfloat16, trust_remote_code=True
     )
+    model = model.cuda()
+
+    # The KBLaM config is loaded with the model itself.
+    kb_config = model.config
+
+
+    # --- KB Retriever Setup ---
+    # Support both precomputed and on-the-fly encoder embeddings
+    encoder = None
+    use_precomputed = precomputed_embed_keys_path is not None and precomputed_embed_values_path is not None
+    if not use_precomputed:
+        # On-the-fly encoder initialization (matches original logic)
+        from kblam.kb_encoder import KBEncoder
+        # Use model config to determine output dimension
+        out_dim = kb_config.hidden_size * (kb_config.num_hidden_layers // getattr(kb_config, 'kb_layer_frequency', 3) + 1)
+        encoder = KBEncoder(
+            encoder_name=encoder_model_spec.upper(),
+            projector_type="linear",
+            endpoint_url="",
+            out_dim=out_dim,
+            frozen_base_model=True,
+            device=torch.device("cuda"),
+        )
+        # Optionally load encoder weights if path provided
+        encoder_path = getattr(args, "encoder_dir", None)
+        if encoder_path:
+            encoder.load_state_dict(torch.load(encoder_path))
 
     kb_retriever = KBRetriever(
-        encoder,
-        dataset,
+        encoder=encoder,
+        dataset=dataset,
         precomputed_embed_keys_path=precomputed_embed_keys_path,
         precomputed_embed_values_path=precomputed_embed_values_path,
     )
 
+    # --- Perform Evaluation ---
     gen_results, score_results = perform_eval(
-        model,
-        tokenizer,
-        kb_retriever,
-        encoder_model_spec,
-        kb_config,
-        eval_mode,
+        model=model,
+        tokenizer=tokenizer,
+        kb_retriever=kb_retriever,
+        encoder_model_spec=encoder_model_spec,
+        kb_config=kb_config,
+        eval_mode=eval_mode,
         seed=seed,
         kb_size=kb_size,
         topk_size=args.topk_size,
         multi_entites=args.multi_entites,
+        fancy_format=getattr(args, 'fancy_format', False),
+        attn_save_dir=getattr(args, 'attn_save_dir', None),
     )
     mem_cost = torch.cuda.max_memory_reserved("cuda")
     score_results["mem_cost"] = mem_cost
 
-    (Path(args.save_dir) / exp_config).mkdir(exist_ok=True, parents=True)
-    write_to_json(score_results, Path(args.save_dir) / f"{exp_config}.json")
+    save_path = Path(args.save_dir) / exp_config
+    save_path.mkdir(exist_ok=True, parents=True)
+    write_to_json(score_results, save_path.with_suffix(".json"))
+    print(f"Scores saved to: {save_path.with_suffix('.json')}")
     print(score_results)
-    text_file = open(os.path.join(args.save_dir, exp_config + ".txt"), "w")
-    text_file.write(gen_results)
+
+    results_txt_path = save_path.with_suffix(".txt")
+    with open(results_txt_path, "w", encoding="utf-8") as text_file:
+        text_file.write(gen_results)
+    print(f"Generation results saved to: {results_txt_path}")
+
+    print("\nEvaluation complete.")
